@@ -44,6 +44,14 @@ class DXFEntity:
         values = self.get_values(code)
         return values[0] if values else default
 
+    def get_all_tags(self) -> List[DXFTag]:
+        """Возвращает все теги сущности."""
+        return self.tags
+
+    def has_code(self, code: int) -> bool:
+        """Проверяет наличие кода группы в сущности."""
+        return code in self._tag_dict
+
     def __repr__(self):
         return f"<DXFEntity: {self.name} ({len(self.tags)} tags)>"
 
