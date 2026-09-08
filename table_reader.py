@@ -144,6 +144,31 @@ class TableEntity:
     border_lineweight_override_flag: int = 0
     table_value: int = 0
     content_handle: str = ""
+    
+    # Break/Fragment data for split tables
+    break_flags: int = 0              # DXF 90 (первое значение) - битовые флаги разбиения таблицы
+    break_auto_flag: int = 0          # DXF 90 (второе значение) - дополнительные флаги
+    row_break_flag: int = 0           # DXF 91 (второе значение) - флаг разрыва строк
+    break_flow: int = 0               # DXF 175 - направление потока (0=Down, 1=Right, 5=Left-to-Right then Down)
+    break_height: float = 0.0         # DXF 142 (первое) - высота фрагмента
+    break_spacing: float = 0.0        # DXF 143 - зазор между фрагментами
+    column_widths: List[float] = field(default_factory=list)  # DXF 142 (остальные) - ширины колонок
+    row_margins: List[float] = field(default_factory=list)    # DXF 141 - отступы строк
+    cell_margin: float = 0.0          # DXF 145 - отступ ячейки
+    grid_horizontal_flag: int = 0     # DXF 171
+    grid_vertical_flag: int = 0       # DXF 172
+    title_suppressed: bool = False    # DXF 173
+    header_suppressed: bool = False   # DXF 174
+    flow_direction_type: int = 0      # DXF 176
+    unknown_178: int = 0              # DXF 178
+    
+    # Cell data
+    cell_binary_data: List[bytes] = field(default_factory=list)  # DXF 310 - бинарные данные ячеек
+    cell_markers: List[str] = field(default_factory=list)        # DXF 300, 301 - маркеры ячеек
+    
+    # Block reference
+    anonymous_block_name: str = ""    # DXF 2 - имя анонимного блока (*T...)
+    
     raw_data: Optional[RawDXFData] = None
     
     def __repr__(self):
@@ -310,7 +335,7 @@ class TableReader:
         return raw_data
     
     def parse_table_entity(self, entity: DXFEntity) -> TableEntity:
-        """Parse an ACAD_TABLE entity into TableEntity."""
+        """Parse an ACAD_TABLE entity into TableEntity including break/fragment data and cell data."""
         table_entity = TableEntity()
         table_entity.handle = entity.get_first_value(5, '')
         table_entity.owner_handle = entity.get_first_value(330, '')
@@ -328,18 +353,84 @@ class TableReader:
         dir_z = entity.get_first_value(31, 0.0)
         table_entity.horizontal_direction = (dir_x, dir_y, dir_z)
         
-        table_entity.n_rows = entity.get_first_value(90, 0)
-        table_entity.n_cols = entity.get_first_value(91, 0)
+        # Basic dimensions - codes 90 (rows), 91 (cols)
+        # NOTE: In split tables, code 90 may appear twice: [total_rows, flags]
+        vals_90 = entity.get_values(90)
+        table_entity.n_rows = vals_90[0] if vals_90 else 0
+        table_entity.break_flags = vals_90[0] if vals_90 else 0  # First value is also break flags
+        table_entity.break_auto_flag = vals_90[1] if len(vals_90) > 1 else 0
+        
+        vals_91 = entity.get_values(91)
+        table_entity.n_cols = vals_91[0] if vals_91 else 0
+        table_entity.row_break_flag = vals_91[1] if len(vals_91) > 1 else 0
+        
+        # Style and block references
         table_entity.table_style_id = entity.get_first_value(340, '')
         table_entity.block_record_handle = entity.get_first_value(341, '')
-        table_entity.override_flag = entity.get_first_value(92, 0)
+        
+        # Anonymous block name (code 2)
+        table_entity.anonymous_block_name = entity.get_first_value(2, '')
+        
+        # Override flags (code 92 may have multiple values)
+        vals_92 = entity.get_values(92)
+        table_entity.override_flag = vals_92[0] if vals_92 else 0
+        
+        # Border override flags
         table_entity.border_visibility_override_flag = entity.get_first_value(93, 0)
         table_entity.border_color_override_flag = entity.get_first_value(94, 0)
         table_entity.border_lineweight_override_flag = entity.get_first_value(95, 0)
         table_entity.table_value = entity.get_first_value(96, 0)
         
+        # === BREAK/FRAGMENT DATA (critical for split tables) ===
+        
+        # DXF 175: Break flow direction
+        # 0 = Down, 1 = Right, 5 = Left-to-Right then Down
+        table_entity.break_flow = entity.get_first_value(175, 0)
+        
+        # DXF 142: Break height (first value) and column widths (remaining values)
+        all_142_values = entity.get_values(142)
+        if all_142_values:
+            table_entity.break_height = all_142_values[0] if all_142_values else 0.0
+            table_entity.column_widths = all_142_values[1:] if len(all_142_values) > 1 else []
+        
+        # DXF 143: Break spacing (gap between fragments)
+        table_entity.break_spacing = entity.get_first_value(143, 0.0)
+        
+        # DXF 141: Row margins
+        table_entity.row_margins = entity.get_values(141)
+        
+        # DXF 145: Cell margin
+        table_entity.cell_margin = entity.get_first_value(145, 0.0)
+        
+        # Grid flags
+        table_entity.grid_horizontal_flag = entity.get_first_value(171, 0)
+        table_entity.grid_vertical_flag = entity.get_first_value(172, 0)
+        
+        # Suppression flags
+        table_entity.title_suppressed = bool(entity.get_first_value(173, 0))
+        table_entity.header_suppressed = bool(entity.get_first_value(174, 0))
+        
+        # Flow direction type
+        table_entity.flow_direction_type = entity.get_first_value(176, 0)
+        table_entity.unknown_178 = entity.get_first_value(178, 0)
+        
+        # === CELL DATA ===
+        
+        # DXF 310: Binary cell data
+        binary_data_list = entity.get_values(310)
+        for bd in binary_data_list:
+            if isinstance(bd, str):
+                try:
+                    table_entity.cell_binary_data.append(bytes.fromhex(bd))
+                except:
+                    pass
+            elif isinstance(bd, bytes):
+                table_entity.cell_binary_data.append(bd)
+        
+        # DXF 300, 301: Cell markers
+        table_entity.cell_markers = entity.get_values(300) + entity.get_values(301)
+        
         # Find content and geometry handles from hard pointers (code 340+)
-        # Multiple 340 codes may exist - need to check types
         ptr_handles = entity.get_values(340)
         if len(ptr_handles) >= 1:
             table_entity.geometry_handle = ptr_handles[0] if ptr_handles else ''
@@ -652,13 +743,17 @@ class TableReader:
         Read and reconstruct all tables from the DXF file.
         
         Returns a list of fully reconstructed Table objects.
+        Handles split tables (multiple fragments with same style handle).
         """
         self.tables = []
         
-        # Step 1: Find all ACAD_TABLE entities
-        table_entities = self.find_table_entities()
+        # Step 1: Find ALL table fragments (including split tables)
+        table_fragments_dict = self.find_all_table_fragments()
         print(f"\n===== TABLE SEARCH =====")
-        print(f"TABLE entities found: {len(table_entities)}")
+        
+        total_fragments = sum(len(frags) for frags in table_fragments_dict.values())
+        print(f"TABLE entities found: {total_fragments}")
+        print(f"Logical tables (grouped by style): {len(table_fragments_dict)}")
         
         # Step 2: Find all related objects
         tablecontent_objects = self.find_objects_by_type('TABLECONTENT')
@@ -692,38 +787,81 @@ class TableReader:
             geometry = self.parse_table_geometry(obj)
             self.table_geometry[geometry.handle] = geometry
             
-        # Step 6: Reconstruct each table with full linking
-        for i, entity in enumerate(table_entities, 1):
-            print(f"\n===== TABLE #{i} =====")
+        # Step 6: Process each logical table (may contain multiple fragments)
+        table_num = 0
+        for style_handle, fragments in table_fragments_dict.items():
+            table_num += 1
+            print(f"\n{'='*70}")
+            print(f"===== LOGICAL TABLE #{table_num} (Style Handle: {style_handle}) =====")
+            print(f"Number of fragments: {len(fragments)}")
+            print(f"{'='*70}")
             
-            table = Table()
-            table.source_file = str(self.dxf_path)
-            table.dxf_version = self.parser.version
-            
-            # Parse entity
-            table_entity = self.parse_table_entity(entity)
-            table.entity = table_entity
-            
-            print(f"Handle: {table_entity.handle}")
-            print(f"Owner: {table_entity.owner_handle}")
-            print(f"Layer: {table_entity.layer}")
-            print(f"Insert: {table_entity.insert_point}")
-            print(f"Rows: {table_entity.n_rows}")
-            print(f"Cols: {table_entity.n_cols}")
-            print(f"Style ID: {table_entity.table_style_id}")
-            print(f"Block Record: {table_entity.block_record_handle}")
-            
-            # Link associated style
-            if table_entity.table_style_id in self.table_styles:
-                table.style = self.table_styles[table_entity.table_style_id]
-                print(f"Linked Style: {table.style.name}")
+            # Process each fragment
+            for frag_idx, entity in enumerate(fragments, 1):
+                print(f"\n--- FRAGMENT #{frag_idx} ---")
                 
-            # Store all raw data
-            table.all_raw_tags['entity'] = table_entity.raw_data
-            
-            # Add to results
-            self.tables.append(table)
-            
+                table = Table()
+                table.source_file = str(self.dxf_path)
+                table.dxf_version = self.parser.version
+                
+                # Parse entity (includes break/fragment data)
+                table_entity = self.parse_table_entity(entity)
+                table.entity = table_entity
+                
+                print(f"  Handle: {table_entity.handle}")
+                print(f"  Owner: {table_entity.owner_handle}")
+                print(f"  Layer: {table_entity.layer}")
+                print(f"  Insert Point: {table_entity.insert_point}")
+                print(f"  Rows in fragment: {table_entity.n_rows}")
+                print(f"  Columns: {table_entity.n_cols}")
+                print(f"  Style ID: {table_entity.table_style_id}")
+                print(f"  Block Record: {table_entity.block_record_handle}")
+                print(f"  Anonymous Block: {table_entity.anonymous_block_name}")
+                
+                # Print break/fragment data
+                print(f"\n  === BREAK/FRAGMENT DATA ===")
+                print(f"  Break Flags (DXF 90 first): {table_entity.break_flags} (binary: {bin(table_entity.break_flags)})")
+                print(f"  Break Auto Flag (DXF 90 second): {table_entity.break_auto_flag}")
+                print(f"  Row Break Flag (DXF 91 second): {table_entity.row_break_flag}")
+                print(f"  Break Flow (DXF 175): {table_entity.break_flow}")
+                print(f"  Break Height (DXF 142 first): {table_entity.break_height}")
+                print(f"  Break Spacing (DXF 143): {table_entity.break_spacing}")
+                print(f"  Column Widths (DXF 142 list): {table_entity.column_widths}")
+                print(f"  Row Margins (DXF 141): {table_entity.row_margins}")
+                print(f"  Cell Margin (DXF 145): {table_entity.cell_margin}")
+                print(f"  Grid Horizontal Flag (DXF 171): {table_entity.grid_horizontal_flag}")
+                print(f"  Grid Vertical Flag (DXF 172): {table_entity.grid_vertical_flag}")
+                print(f"  Title Suppressed (DXF 173): {table_entity.title_suppressed}")
+                print(f"  Header Suppressed (DXF 174): {table_entity.header_suppressed}")
+                print(f"  Flow Direction Type (DXF 176): {table_entity.flow_direction_type}")
+                print(f"  Unknown 178: {table_entity.unknown_178}")
+                
+                # Decode break flags
+                if table_entity.break_flags:
+                    print(f"\n  Break Flags Decoded:")
+                    print(f"    Bit 0 (Break Enabled): {'YES' if table_entity.break_flags & 1 else 'NO'}")
+                    print(f"    Bit 1 (Flow Direction): {'Right/Custom' if table_entity.break_flags & 2 else 'Down'}")
+                    print(f"    Bit 2 (Auto Break): {'YES' if table_entity.break_flags & 4 else 'NO'}")
+                
+                # Print cell data info
+                print(f"\n  === CELL DATA ===")
+                print(f"  Binary Data Chunks: {len(table_entity.cell_binary_data)}")
+                print(f"  Cell Markers: {table_entity.cell_markers}")
+                if table_entity.cell_binary_data:
+                    print(f"  First binary chunk size: {len(table_entity.cell_binary_data[0])} bytes")
+                    print(f"  First 50 bytes (hex): {table_entity.cell_binary_data[0][:50].hex()}")
+                
+                # Link associated style
+                if table_entity.table_style_id in self.table_styles:
+                    table.style = self.table_styles[table_entity.table_style_id]
+                    print(f"\n  Linked Style: {table.style.name}")
+                    
+                # Store all raw data
+                table.all_raw_tags[f'entity_fragment_{frag_idx}'] = table_entity.raw_data
+                
+                # Add to results
+                self.tables.append(table)
+        
         return self.tables
     
     def print_table_summary(self, table: Table):
