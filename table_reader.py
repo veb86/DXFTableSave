@@ -250,7 +250,7 @@ class TableReader:
     
     def find_table_entities(self) -> List[DXFEntity]:
         """Find all ACAD_TABLE entities in ENTITIES section."""
-        return self.parser.find_entities('ACAD_TABLE')
+        return self.parser.find_entities_by_type('ACAD_TABLE')
     
     def extract_raw_tags(self, entity: DXFEntity) -> RawDXFData:
         """Extract all raw DXF tags from an entity."""
@@ -639,7 +639,7 @@ def main():
         print("Failed to load DXF file!")
         return
         
-    print(f"DXF Version: {reader.doc.dxfversion}")
+    print(f"DXF Version: {reader.parser.version}")
     
     # Analyze header
     print("\n=== HEADER ANALYSIS ===")
