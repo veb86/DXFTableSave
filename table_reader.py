@@ -11,12 +11,16 @@ with all its associated data including:
 - All raw DXF tags preserved
 
 Author: Auto-generated based on Technical Specification
+
+Dependencies: Only dxf_parser.py (no ezdxf)
 """
 
-import ezdxf
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
+
+# Import our custom DXF parser instead of ezdxf
+from dxf_parser import DXFParser, DXFTag, DXFEntity
 
 
 @dataclass
@@ -207,98 +211,109 @@ class TableReader:
     4. Finds TABLECONTENT and TABLEGEOMETRY in OBJECTS section
     5. Preserves all raw DXF tags
     6. Reconstructs complete Table objects
+    
+    Uses DXFParser (no ezdxf dependency).
     """
     
     def __init__(self, dxf_path: str):
         self.dxf_path = Path(dxf_path)
-        self.doc = None
+        self.parser: Optional[DXFParser] = None
         self.tables: List[Table] = []
         self.table_styles: Dict[str, TableStyleData] = {}
         self.table_content: Dict[str, TableContentData] = {}
         self.table_geometry: Dict[str, TableGeometryData] = {}
         
     def load(self) -> bool:
-        """Load the DXF file."""
+        """Load the DXF file using DXFParser."""
         try:
-            self.doc = ezdxf.readfile(str(self.dxf_path))
+            self.parser = DXFParser(str(self.dxf_path))
+            self.parser.read()
             return True
         except Exception as e:
             print(f"Error loading DXF file: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def analyze_header(self) -> Dict[str, Any]:
         """Analyze HEADER section for table-related variables."""
         header_info = {
-            'dxf_version': self.doc.dxfversion,
-            'acadver': self.doc.header.get('$ACADVER', 'N/A'),
-            'acadmaintver': self.doc.header.get('$ACADMAINTVER', 'N/A'),
-            'dwgcodepage': self.doc.header.get('$DWGCODEPAGE', 'N/A'),
-            'lastsavedby': self.doc.header.get('$LASTSAVEDBY', 'N/A'),
-            'textstyle': self.doc.header.get('$TEXTSTYLE', 'N/A'),
-            'dimtxsty': self.doc.header.get('$DIMTXSTY', 'N/A'),
+            'dxf_version': self.parser.version,
+            'acadver': self.parser.header_vars.get('$ACADVER', 'N/A'),
+            'acadmaintver': self.parser.header_vars.get('$ACADMAINTVER', 'N/A'),
+            'dwgcodepage': self.parser.header_vars.get('$DWGCODEPAGE', 'N/A'),
+            'lastsavedby': self.parser.header_vars.get('$LASTSAVEDBY', 'N/A'),
+            'textstyle': self.parser.header_vars.get('$TEXTSTYLE', 'N/A'),
+            'dimtxsty': self.parser.header_vars.get('$DIMTXSTY', 'N/A'),
         }
         return header_info
     
-    def find_table_entities(self) -> List[Any]:
-        """Find all ACAD_TABLE entities in modelspace."""
-        return list(self.doc.modelspace().query('ACAD_TABLE'))
+    def find_table_entities(self) -> List[DXFEntity]:
+        """Find all ACAD_TABLE entities in ENTITIES section."""
+        return self.parser.find_entities('ACAD_TABLE')
     
-    def extract_raw_tags(self, entity) -> RawDXFData:
+    def extract_raw_tags(self, entity: DXFEntity) -> RawDXFData:
         """Extract all raw DXF tags from an entity."""
         raw_data = RawDXFData()
-        if hasattr(entity, 'xtags') and entity.xtags is not None:
-            raw_data.tags = list(entity.xtags)
+        raw_data.tags = [(tag.code, tag.value) for tag in entity.tags]
         return raw_data
     
-    def parse_table_entity(self, entity) -> TableEntity:
+    def parse_table_entity(self, entity: DXFEntity) -> TableEntity:
         """Parse an ACAD_TABLE entity into TableEntity."""
         table_entity = TableEntity()
-        table_entity.handle = entity.dxf.handle
-        table_entity.owner_handle = getattr(entity.dxf, 'owner', '')
-        table_entity.layer = entity.dxf.layer
-        table_entity.insert_point = entity.dxf.insert
-        table_entity.horizontal_direction = entity.dxf.horizontal_direction
-        table_entity.n_rows = entity.dxf.n_rows
-        table_entity.n_cols = entity.dxf.n_cols
-        table_entity.table_style_id = str(entity.dxf.table_style_id)
-        table_entity.block_record_handle = str(entity.dxf.block_record_handle)
-        table_entity.override_flag = entity.dxf.override_flag
-        table_entity.border_visibility_override_flag = entity.dxf.border_visibility_override_flag
-        table_entity.border_color_override_flag = entity.dxf.border_color_override_flag
-        table_entity.border_lineweight_override_flag = entity.dxf.border_lineweight_override_flag
-        table_entity.table_value = entity.dxf.table_value
+        table_entity.handle = entity.get_first_value(5, '')
+        table_entity.owner_handle = entity.get_first_value(330, '')
+        table_entity.layer = entity.get_first_value(8, '0')
         
-        # Get geometry handle from xtags
-        if hasattr(entity, 'xtags') and entity.xtags is not None:
-            for tag in entity.xtags:
-                if tag[0] == 340 and tag[1]:  # Hard pointer to geometry
-                    # Check context - could be geometry or content
-                    pass
+        # Insert point (codes 10, 20, 30)
+        insert_x = entity.get_first_value(10, 0.0)
+        insert_y = entity.get_first_value(20, 0.0)
+        insert_z = entity.get_first_value(30, 0.0)
+        table_entity.insert_point = (insert_x, insert_y, insert_z)
+        
+        # Horizontal direction (codes 11, 21, 31)
+        dir_x = entity.get_first_value(11, 1.0)
+        dir_y = entity.get_first_value(21, 0.0)
+        dir_z = entity.get_first_value(31, 0.0)
+        table_entity.horizontal_direction = (dir_x, dir_y, dir_z)
+        
+        table_entity.n_rows = entity.get_first_value(90, 0)
+        table_entity.n_cols = entity.get_first_value(91, 0)
+        table_entity.table_style_id = entity.get_first_value(340, '')
+        table_entity.block_record_handle = entity.get_first_value(341, '')
+        table_entity.override_flag = entity.get_first_value(92, 0)
+        table_entity.border_visibility_override_flag = entity.get_first_value(93, 0)
+        table_entity.border_color_override_flag = entity.get_first_value(94, 0)
+        table_entity.border_lineweight_override_flag = entity.get_first_value(95, 0)
+        table_entity.table_value = entity.get_first_value(96, 0)
+        
+        # Find content and geometry handles from hard pointers (code 340+)
+        # Multiple 340 codes may exist - need to check types
+        ptr_handles = entity.get_values(340)
+        if len(ptr_handles) >= 1:
+            table_entity.geometry_handle = ptr_handles[0] if ptr_handles else ''
+        if len(ptr_handles) >= 2:
+            table_entity.content_handle = ptr_handles[1] if len(ptr_handles) > 1 else ''
         
         # Store raw tags
         table_entity.raw_data = self.extract_raw_tags(entity)
         
         return table_entity
     
-    def find_objects_by_type(self, type_name: str) -> List[Any]:
+    def find_objects_by_type(self, type_name: str) -> List[DXFEntity]:
         """Find all objects of a specific type in OBJECTS section."""
-        result = []
-        for obj in self.doc.objects:
-            if obj.dxftype() == type_name:
-                result.append(obj)
-        return result
+        return [obj for obj in self.parser.objects if obj.name == type_name]
     
-    def parse_table_content(self, obj) -> TableContentData:
+    def parse_table_content(self, obj: DXFEntity) -> TableContentData:
         """Parse TABLECONTENT object."""
         content = TableContentData()
-        content.handle = obj.dxf.handle
-        content.owner_handle = getattr(obj.dxf, 'owner_handle', '')
+        content.handle = obj.get_first_value(5, '')
+        content.owner_handle = obj.get_first_value(330, '')
         content.raw_data = self.extract_raw_tags(obj)
         
         # Parse columns and other data from tags
         if content.raw_data:
             current_col = None
-            current_section = ''
             
             for tag in content.raw_data.tags:
                 code, value = tag
@@ -314,11 +329,11 @@ class TableReader:
                     
         return content
     
-    def parse_table_geometry(self, obj) -> TableGeometryData:
+    def parse_table_geometry(self, obj: DXFEntity) -> TableGeometryData:
         """Parse TABLEGEOMETRY object."""
         geometry = TableGeometryData()
-        geometry.handle = obj.dxf.handle
-        geometry.owner_handle = getattr(obj.dxf, 'owner_handle', '')
+        geometry.handle = obj.get_first_value(5, '')
+        geometry.owner_handle = obj.get_first_value(330, '')
         geometry.raw_data = self.extract_raw_tags(obj)
         
         # Parse geometry data from tags
@@ -343,10 +358,10 @@ class TableReader:
                     
         return geometry
     
-    def parse_table_style(self, obj) -> TableStyleData:
+    def parse_table_style(self, obj: DXFEntity) -> TableStyleData:
         """Parse TABLESTYLE or ACAD_TABLESTYLE object."""
         style = TableStyleData()
-        style.handle = obj.dxf.handle
+        style.handle = obj.get_first_value(5, '')
         style.raw_data = self.extract_raw_tags(obj)
         
         # Parse style data from tags
@@ -528,7 +543,7 @@ class TableReader:
             
             table = Table()
             table.source_file = str(self.dxf_path)
-            table.dxf_version = self.doc.dxfversion
+            table.dxf_version = self.parser.version
             
             # Parse entity
             table_entity = self.parse_table_entity(entity)
