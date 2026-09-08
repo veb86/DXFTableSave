@@ -162,6 +162,9 @@ class DXFParser:
             
             if section_name == "HEADER":
                 self._parse_header(iterator)
+            elif section_name == "CLASSES":
+                # Пропускаем секцию CLASSES - она содержит определения классов
+                self._skip_section(iterator)
             elif section_name == "TABLES":
                 self._parse_tables_section(iterator)
             elif section_name == "ENTITIES":
