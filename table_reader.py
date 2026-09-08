@@ -252,6 +252,45 @@ class TableReader:
         """Find all ACAD_TABLE entities in ENTITIES section."""
         return self.parser.find_entities_by_type('ACAD_TABLE')
     
+    def find_all_table_fragments(self) -> Dict[str, List[DXFEntity]]:
+        """
+        Find ALL table fragments including split tables.
+        
+        Returns a dictionary grouped by style handle (code 342).
+        Tables with the same style handle are parts of one logical table.
+        """
+        # Search for AcDbTable class name in ENTITIES section
+        fragments = []
+        
+        for entity in self.parser.entities:
+            # Check if this entity has AcDbTable class marker
+            has_acdb_table = False
+            for tag in entity.tags:
+                if tag.code == 0 and tag.value == 'AcDbTable':
+                    has_acdb_table = True
+                    break
+            
+            if has_acdb_table:
+                fragments.append(entity)
+        
+        # Group by style handle (code 342)
+        grouped = {}
+        for frag in fragments:
+            style_handle = frag.get_first_value(342, '')
+            if not style_handle:
+                style_handle = f"unknown_{frag.get_first_value(5, '???')}"
+            
+            if style_handle not in grouped:
+                grouped[style_handle] = []
+            grouped[style_handle].append(frag)
+        
+        # Sort fragments within each group by handle or insertion order
+        for style_handle in grouped:
+            # Keep original order (AutoCAD preserves fragment order in file)
+            pass
+        
+        return grouped
+    
     def extract_raw_tags(self, entity: DXFEntity) -> RawDXFData:
         """Extract all raw DXF tags from an entity."""
         raw_data = RawDXFData()
