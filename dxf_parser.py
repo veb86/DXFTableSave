@@ -233,29 +233,35 @@ class DXFParser:
 
     def _parse_entities_section(self):
         """Парсит секцию ENTITIES."""
+        count = 0
         while True:
             tag = self._read_tag()
             if not tag:
                 break
             if tag.code == 0 and tag.value == "ENDSEC":
+                print(f"  Parsed {count} entities.")
                 break
             
             if tag.code == 0:
                 entity = self._read_entity(tag)
                 self.entities.append(entity)
+                count += 1
 
     def _parse_objects_section(self):
         """Парсит секцию OBJECTS."""
+        count = 0
         while True:
             tag = self._read_tag()
             if not tag:
                 break
             if tag.code == 0 and tag.value == "ENDSEC":
+                print(f"  Parsed {count} objects.")
                 break
             
             if tag.code == 0:
                 entity = self._read_entity(tag)
                 self.objects.append(entity)
+                count += 1
 
     def find_entities_by_type(self, entity_type: str) -> List[DXFEntity]:
         """Находит все сущности указанного типа."""
