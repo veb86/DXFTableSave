@@ -15,9 +15,26 @@ export interface TableCell {
   row: number;
   col: number;
   text: string;
-  type?: 'text' | 'number' | 'header' | 'title';
+  type?: 'text' | 'number' | 'header' | 'title' | 'block';
+  cellStyle?: string; // "По строке/столбцу" (AutoCAD Cell Style: By Row/Column)
+  rowStyle?: 'Title' | 'Header' | 'Data';
+  colStyle?: string; // "нет" (AutoCAD Column Style: not defined)
+  cellType?: 'Text' | 'Block';
+  alignmentCode?: number;
+  alignmentName?: string;
   width?: number;
   height?: number;
+  isMerged?: boolean;
+  colSpan?: number;
+  rowSpan?: number;
+  textStyle?: string;
+  textHeight?: number;
+  rotation?: number;
+  overrideFlags?: number;
+  virtualEdge?: number;
+  autofit?: boolean;
+  color?: number;
+  bgColor?: number;
 }
 
 export interface TableBreakOptionInfo {

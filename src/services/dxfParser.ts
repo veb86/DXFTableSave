@@ -126,6 +126,27 @@ export function analyzeDXF(
   let inSection = false;
   let maxHandle = 0;
 
+  // Extract row definitions from TABLECONTENT if present
+  const tableContentRowDefs: { rowType: number; height: number }[] = [];
+  let inTC = false;
+  for (let idx = 0; idx < tags.length; idx++) {
+    const t = tags[idx];
+    if (t.code === 0 && t.value === 'TABLECONTENT') {
+      inTC = true;
+    } else if (inTC && t.code === 0) {
+      inTC = false;
+    }
+    if (inTC && t.value === 'TABLEROW_BEGIN') {
+      let rType = 3;
+      let rHeight = 0;
+      for (let k = idx + 1; k < Math.min(idx + 8, tags.length); k++) {
+        if (tags[k].code === 90 && rType === 3) rType = Number(tags[k].value);
+        if (tags[k].code === 40 && rHeight === 0) rHeight = Number(tags[k].value);
+      }
+      tableContentRowDefs.push({ rowType: rType, height: rHeight });
+    }
+  }
+
   let i = 0;
   while (i < tags.length) {
     const tag = tags[i];
@@ -209,7 +230,11 @@ export function analyzeDXF(
 
         // Handle ACAD_TABLE entity
         if (entityType === 'ACAD_TABLE' || entityType === 'TABLE') {
-          const tableObj = parseTableEntity(entityTags, tables.length + 1);
+          const tableObj = parseTableEntity(
+            entityTags,
+            tables.length + 1,
+            tableContentRowDefs
+          );
           tables.push(tableObj);
         } else if (entityType === 'LINE') {
           const line = parseLineEntity(entityTags, layer);
@@ -298,7 +323,11 @@ export function analyzeDXF(
   };
 }
 
-function parseTableEntity(tags: DXFTag[], index: number): TableFragment {
+function parseTableEntity(
+  tags: DXFTag[],
+  index: number,
+  tableContentRowDefs?: { rowType: number; height: number }[]
+): TableFragment {
   const handle = String(tags.find((t) => t.code === 5)?.value || `TBL_${index}`);
   const owner = String(tags.find((t) => t.code === 330)?.value || '');
   const layer = String(tags.find((t) => t.code === 8)?.value || '0');
@@ -335,6 +364,8 @@ function parseTableEntity(tags: DXFTag[], index: number): TableFragment {
     (t) => t.code === 100 && String(t.value).trim() === 'AcDbTable'
   );
 
+  let last142Idx = -1;
+
   if (acDbTableIdx !== -1) {
     let found90 = false;
     let found91 = false;
@@ -358,9 +389,12 @@ function parseTableEntity(tags: DXFTag[], index: number): TableFragment {
         cols = t.value;
         found92 = true;
       } else if (t.code === 141 && typeof t.value === 'number' && t.value > 0) {
-        columnWidths.push(t.value);
-      } else if (t.code === 142 && typeof t.value === 'number' && t.value > 0) {
+        // DXF Group Code 141: Row Height (repeated for each row)
         rowHeights.push(t.value);
+      } else if (t.code === 142 && typeof t.value === 'number' && t.value > 0) {
+        // DXF Group Code 142: Column Width (repeated for each column)
+        columnWidths.push(t.value);
+        last142Idx = j;
       }
     }
   }
@@ -372,61 +406,173 @@ function parseTableEntity(tags: DXFTag[], index: number): TableFragment {
 
   const breakOptionInfo = decodeTableBreakFlags(breakFlags);
 
-  // Extract cell texts from groups 300, 301, 302, 1, 3, etc.
-  const cellTexts: string[] = [];
-  tags.forEach((t) => {
-    if ((t.code === 300 || t.code === 301 || t.code === 302 || t.code === 1 || t.code === 3) && typeof t.value === 'string') {
-      const cleanVal = t.value.trim();
-      if (
-        cleanVal &&
-        cleanVal !== 'Standard' &&
-        cleanVal !== 'CELL_VALUE' &&
-        cleanVal !== 'ACVALUE_END' &&
-        cleanVal !== 'FlowingText' &&
-        !cleanVal.startsWith('{')
-      ) {
-        cellTexts.push(cleanVal);
-      }
-    }
-  });
+  // Collect individual cell blocks starting with DXF 171
+  const cellTagSlice = last142Idx !== -1 ? tags.slice(last142Idx + 1) : tags;
+  const rawCellBlocks: DXFTag[][] = [];
+  let currBlock: DXFTag[] = [];
 
-  // If cols/rows not explicitly provided, estimate from cellTexts or defaults
-  if (cols <= 0) cols = columnWidths.length > 0 ? columnWidths.length : 4;
-  if (rows <= 0) rows = Math.max(3, Math.ceil(cellTexts.length / cols) || 4);
-
-  if (columnWidths.length < cols) {
-    const defaultColW = 35;
-    while (columnWidths.length < cols) {
-      columnWidths.push(defaultColW);
+  for (const t of cellTagSlice) {
+    if (t.code === 171) {
+      if (currBlock.length > 0) rawCellBlocks.push(currBlock);
+      currBlock = [t];
+    } else if (currBlock.length > 0) {
+      currBlock.push(t);
     }
   }
+  if (currBlock.length > 0) rawCellBlocks.push(currBlock);
 
-  if (rowHeights.length < rows) {
-    while (rowHeights.length < rows) {
-      rowHeights.push(8.0);
-    }
+  // If cols/rows not explicitly provided, estimate from cell blocks or defaults
+  if (cols <= 0) cols = columnWidths.length > 0 ? columnWidths.length : 5;
+  if (rows <= 0) {
+    rows = rawCellBlocks.length > 0 ? Math.ceil(rawCellBlocks.length / cols) : (rowHeights.length || 10);
   }
 
-  // Construct structured cells
+  while (columnWidths.length < cols) columnWidths.push(2.5);
+  while (rowHeights.length < rows) rowHeights.push(0.36);
+
+  const ALIGNMENT_NAMES: Record<number, string> = {
+    1: 'Top Left',
+    2: 'Top Center',
+    3: 'Top Right',
+    4: 'Middle Left',
+    5: 'Middle Center',
+    6: 'Middle Right',
+    7: 'Bottom Left',
+    8: 'Bottom Center',
+    9: 'Bottom Right',
+  };
+
   const cells: TableCell[] = [];
-  let textIndex = 0;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const cellText =
-        textIndex < cellTexts.length
-          ? cellTexts[textIndex++]
-          : r === 0
-          ? `Column ${c + 1}`
-          : `Item ${r}-${c + 1}`;
+
+  if (rawCellBlocks.length > 0) {
+    const totalExpected = rows * cols;
+    for (let idx = 0; idx < rawCellBlocks.length && idx < totalExpected; idx++) {
+      const r = Math.floor(idx / cols);
+      const c = idx % cols;
+      const cTags = rawCellBlocks[idx];
+
+      const tagMap: Record<number, (string | number)[]> = {};
+      for (const ct of cTags) {
+        if (!tagMap[ct.code]) tagMap[ct.code] = [];
+        tagMap[ct.code].push(ct.value);
+      }
+
+      // Text extraction: 302, 1, 300
+      let text = '';
+      if (tagMap[302] && tagMap[302].length > 0) {
+        text = String(tagMap[302][tagMap[302].length - 1]).trim();
+      } else if (tagMap[1] && tagMap[1].length > 0) {
+        text = String(tagMap[1][tagMap[1].length - 1]).trim();
+      } else if (tagMap[300] && tagMap[300].length > 0) {
+        text = String(tagMap[300][tagMap[300].length - 1]).trim();
+      }
+
+      if (
+        text === 'CELL_VALUE' ||
+        text === 'ACVALUE_END' ||
+        text === 'Standard' ||
+        text.startsWith('{')
+      ) {
+        text = '';
+      }
+
+      const cellTypeCode = Number(tagMap[171]?.[0] ?? 1);
+      const cellType: 'Text' | 'Block' = cellTypeCode === 2 ? 'Block' : 'Text';
+      const isMerged = Boolean(tagMap[173]?.[0] ?? 0);
+      const colSpan = Number(tagMap[175]?.[0] ?? 1);
+      const rowSpan = Number(tagMap[176]?.[0] ?? 1);
+
+      // Determine row style
+      let rowStyle: 'Title' | 'Header' | 'Data' = 'Data';
+      if (tableContentRowDefs && r < tableContentRowDefs.length) {
+        const rt = tableContentRowDefs[r].rowType;
+        rowStyle = rt === 1 ? 'Title' : rt === 2 ? 'Header' : 'Data';
+      } else if (r === 0 || (colSpan === cols && !/^\d+$/.test(text))) {
+        rowStyle = 'Title';
+      } else if (r === 1 || text.startsWith('Header') || text.startsWith('H')) {
+        rowStyle = 'Header';
+      }
+
+      const colW = columnWidths[c] || 2.5;
+      const rowH = rowHeights[r] || 0.36;
+
+      const alignmentCodeRaw = tagMap[170]?.[0];
+      let alignmentCode: number;
+      let alignmentName: string;
+
+      if (alignmentCodeRaw !== undefined && Number(alignmentCodeRaw) in ALIGNMENT_NAMES) {
+        alignmentCode = Number(alignmentCodeRaw);
+        alignmentName = `${ALIGNMENT_NAMES[alignmentCode]} (DXF 170: ${alignmentCode})`;
+      } else if (rowStyle === 'Title' || rowStyle === 'Header') {
+        alignmentCode = 5;
+        alignmentName = 'Middle Center (DXF 170: 5) [Inherited]';
+      } else {
+        alignmentCode = 2;
+        alignmentName = 'Top Center (DXF 170: 2) [Inherited]';
+      }
+
+      const textStyle = tagMap[7]?.[0] ? String(tagMap[7][0]) : 'Standard';
+      const textHeight = tagMap[140]?.[0]
+        ? Number(tagMap[140][0])
+        : rowStyle === 'Title'
+        ? 0.25
+        : 0.18;
+      const rotation = tagMap[145]?.[0] ? Number(tagMap[145][0]) : 0;
+      const overrideFlags = tagMap[91]?.[0] ? Number(tagMap[91][0]) : undefined;
+      const virtualEdge = tagMap[178]?.[0] ? Number(tagMap[178][0]) : undefined;
+      const autofit = Boolean(tagMap[174]?.[0] ?? 0);
+      const color = tagMap[62]?.[0] ? Number(tagMap[62][0]) : undefined;
+      const bgColor = tagMap[63]?.[0] ? Number(tagMap[63][0]) : undefined;
 
       cells.push({
         row: r,
         col: c,
-        text: cellText,
-        type: r === 0 ? 'header' : 'text',
-        width: columnWidths[c] || 35,
-        height: rowHeights[r] || 8,
+        text,
+        type: rowStyle === 'Title' ? 'title' : rowStyle === 'Header' ? 'header' : 'text',
+        cellStyle: 'по строке/столбцу',
+        rowStyle,
+        colStyle: 'нет',
+        cellType,
+        alignmentCode,
+        alignmentName,
+        width: colW,
+        height: rowH,
+        isMerged,
+        colSpan,
+        rowSpan,
+        textStyle,
+        textHeight,
+        rotation,
+        overrideFlags,
+        virtualEdge,
+        autofit,
+        color,
+        bgColor,
       });
+    }
+  } else {
+    // Fallback if no 171 tags
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const rowStyle: 'Title' | 'Header' | 'Data' = r === 0 ? 'Title' : r === 1 ? 'Header' : 'Data';
+        cells.push({
+          row: r,
+          col: c,
+          text: r === 0 ? `Title` : r === 1 ? `Header ${c + 1}` : `Data ${r}-${c + 1}`,
+          type: r === 0 ? 'title' : r === 1 ? 'header' : 'text',
+          cellStyle: 'по строке/столбцу',
+          rowStyle,
+          colStyle: 'нет',
+          cellType: 'Text',
+          alignmentCode: 5,
+          alignmentName: 'Middle Center (DXF 170: 5)',
+          width: columnWidths[c] || 2.5,
+          height: rowHeights[r] || 0.36,
+          isMerged: false,
+          colSpan: 1,
+          rowSpan: 1,
+        });
+      }
     }
   }
 

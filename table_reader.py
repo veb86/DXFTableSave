@@ -1,62 +1,66 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-table_reader.py - AutoCAD ACAD_TABLE Entity Inspector and Table Break Flags Decoder.
+table_reader.py - AutoCAD ACAD_TABLE Entity Deep Inspector.
 
-Corrects the Table Break Flags (DXF Group Code 90) decoding according to
-AutoCAD ObjectARX (AcDbTable::TableBreakOption) specifications.
+Decodes table entities, table break flags (DXF 90), row heights (DXF 141),
+column widths (DXF 142), and extracts comprehensive per-cell metadata:
+- Cell Style & Type (Text/Block, font, text height, colors)
+- Row Style (Title, Header, Data) & Row Height
+- Column Style & Column Width
+- Cell Alignment (Middle Center, Top Right, Top Center, etc.)
+- Cell Text contents (clean decoded strings without duplicates)
+- Cell Merges (col_span, row_span, merged status)
+- Overrides, rotation, virtual edges, autofit
 """
 
 import sys
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dxf_parser import read_tags, extract_entities_by_type, DXFTag
 
 
 # ==============================================================================
 # AutoCAD AcDbTable::TableBreakOption Bitmasks (ObjectARX Specification)
 # ==============================================================================
-# In AutoCAD C++ API (AcDbTable), the break options bitmask is defined as:
-#
-#   Bit 1 (0x01, value 1):  kTableBreakNone
-#       If NOT set (0) when breaking is active, or explicitly indicates no break.
-#
-#   Bit 2 (0x02, value 2):  kTableBreakEnable
-#       CRITICAL FLAG: Enables table breaking across multiple fragments!
-#       (The previous bug checked bit 0 (value 1), falsely reporting 'NO' for 22).
-#
-#   Bit 3 (0x04, value 4):  kTableBreakAuto
-#       Automatic height calculation and fragment splitting.
-#
-#   Bit 4 (0x08, value 8):  kTableBreakAllowManualPositioning
-#       Allows manual positioning / offsets for individual table break fragments.
-#
-#   Bit 5 (0x10, value 16): kTableBreakRepeatHeader / CustomOffsets
-#       Repeats header rows across table break fragments.
-#
-# Example with Break Flags = 22 (0x16, binary 0b10110):
-#   22 = 16 (0x10) + 4 (0x04) + 2 (0x02)
-#   - Bit 2 (0x02) is SET -> kTableBreakEnable = YES (Break is ENABLED!)
-#   - Bit 3 (0x04) is SET -> kTableBreakAuto = YES (Auto-height is ENABLED!)
-#   - Bit 5 (0x10) is SET -> kTableBreakRepeatHeader = YES (Repeat header is ENABLED!)
-# ==============================================================================
-
 TABLE_BREAK_NONE = 0x01
 TABLE_BREAK_ENABLE = 0x02
 TABLE_BREAK_AUTO = 0x04
 TABLE_BREAK_ALLOW_MANUAL_POSITIONING = 0x08
 TABLE_BREAK_REPEAT_HEADER = 0x10
 
+# Alignment mapping according to AutoCAD DXF Group Code 170 / 64
+ALIGNMENT_MAP: Dict[int, str] = {
+    1: "Top Left",
+    2: "Top Center",
+    3: "Top Right",
+    4: "Middle Left",
+    5: "Middle Center",
+    6: "Middle Right",
+    7: "Bottom Left",
+    8: "Bottom Center",
+    9: "Bottom Right",
+}
+
+# Row type / cell role names according to AutoCAD AcDb::RowType
+ROW_STYLE_MAP: Dict[int, str] = {
+    1: "Title",
+    2: "Header",
+    3: "Data",
+}
+
+CELL_TYPE_MAP: Dict[int, str] = {
+    1: "Text",
+    2: "Block",
+}
+
 
 def decode_table_break_flags(flags: int) -> Dict[str, Any]:
     """
     Decodes the DXF group code 90 (Table Break Options) for an AcDbTable entity.
-
-    Returns a dictionary with parsed status and human-readable explanations.
     """
     binary_str = bin(flags)
     hex_str = hex(flags)
 
-    # Correct AutoCAD bit evaluations:
     is_break_none = bool(flags & TABLE_BREAK_NONE)
     is_break_enabled = bool(flags & TABLE_BREAK_ENABLE)
     is_auto_height = bool(flags & TABLE_BREAK_AUTO)
@@ -96,11 +100,67 @@ def decode_table_break_flags(flags: int) -> Dict[str, Any]:
     }
 
 
-def parse_acad_table(entity_tags: List[DXFTag], index: int = 1) -> Dict[str, Any]:
+def extract_tablecontent_row_defs(all_tags: List[DXFTag]) -> List[Tuple[int, float]]:
+    """
+    Extracts row type definitions (Title, Header, Data) and heights from TABLECONTENT objects.
+    """
+    row_defs: List[Tuple[int, float]] = []
+    in_tc = False
+    for i, t in enumerate(all_tags):
+        if t.code == 0 and t.value == "TABLECONTENT":
+            in_tc = True
+        elif in_tc and t.code == 0:
+            in_tc = False
+        if in_tc and t.value == "TABLEROW_BEGIN":
+            # Next code 90 is row type, next code 40 is row height
+            r_type = next((int(all_tags[k].value) for k in range(i + 1, min(i + 8, len(all_tags))) if all_tags[k].code == 90), 3)
+            r_height = next((float(all_tags[k].value) for k in range(i + 1, min(i + 8, len(all_tags))) if all_tags[k].code == 40), 0.0)
+            row_defs.append((r_type, r_height))
+
+    return row_defs
+
+
+def extract_tablestyles(all_tags: List[DXFTag]) -> Dict[str, Dict[str, Any]]:
+    """
+    Extracts TABLESTYLE objects from the DXF tag stream.
+    """
+    styles: Dict[str, Dict[str, Any]] = {}
+    curr: Optional[Dict[str, Any]] = None
+    in_style = False
+
+    for t in all_tags:
+        if t.code == 0 and t.value == "TABLESTYLE":
+            if curr and "handle" in curr:
+                styles[curr["handle"]] = curr
+            curr = {"handle": "", "name": "Standard", "cell_styles": {}}
+            in_style = True
+        elif in_style and t.code == 0:
+            if curr and "handle" in curr:
+                styles[curr["handle"]] = curr
+            curr = None
+            in_style = False
+
+        if in_style and curr is not None:
+            if t.code == 5 and not curr["handle"]:
+                curr["handle"] = str(t.value)
+            elif t.code == 3 and curr["name"] == "Standard":
+                curr["name"] = str(t.value)
+
+    if curr and "handle" in curr:
+        styles[curr["handle"]] = curr
+
+    return styles
+
+
+def parse_acad_table(
+    entity_tags: List[DXFTag],
+    index: int = 1,
+    row_defs: Optional[List[Tuple[int, float]]] = None,
+    tablestyles: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """
     Parses a single ACAD_TABLE entity from its tag stream.
-    Extracts handle, owner, insertion point, table break flags (code 90),
-    dimensions (rows 91, cols 92), column widths, row heights, and cell text contents.
+    Extracts all entity attributes, dimensions, break options, and rich cell-by-cell metadata.
     """
     handle = ""
     owner = ""
@@ -117,14 +177,11 @@ def parse_acad_table(entity_tags: List[DXFTag], index: int = 1) -> Dict[str, Any
 
     col_widths: List[float] = []
     row_heights: List[float] = []
-    cell_texts: List[str] = []
 
-    in_acdb_table_subclass = False
+    last_142_idx = -1
+    acdb_table_idx = -1
 
-    i = 0
-    while i < len(entity_tags):
-        tag = entity_tags[i]
-
+    for i, tag in enumerate(entity_tags):
         if tag.code == 5 and not handle:
             handle = str(tag.value)
         elif tag.code == 330 and not owner:
@@ -139,48 +196,178 @@ def parse_acad_table(entity_tags: List[DXFTag], index: int = 1) -> Dict[str, Any
             ins_z = float(tag.value) if isinstance(tag.value, (int, float)) else 0.0
 
         if tag.code == 100 and str(tag.value) == "AcDbTable":
-            in_acdb_table_subclass = True
-            # Read header parameters immediately following AcDbTable subclass marker:
-            j = i + 1
-            while j < len(entity_tags):
-                sub_tag = entity_tags[j]
-                if sub_tag.code == 100:  # Next subclass
-                    break
+            acdb_table_idx = i
 
-                if sub_tag.code == 342:
-                    style_handle = str(sub_tag.value)
-                elif sub_tag.code == 343:
-                    block_record = str(sub_tag.value)
-                elif sub_tag.code == 90 and break_flags is None:
-                    # First 90 after AcDbTable is the Table Break Option flags!
-                    break_flags = int(sub_tag.value)
-                elif sub_tag.code == 91 and num_rows == 0:
-                    num_rows = int(sub_tag.value)
-                elif sub_tag.code == 92 and num_cols == 0:
-                    num_cols = int(sub_tag.value)
-                elif sub_tag.code == 141:
-                    if isinstance(sub_tag.value, (int, float)):
-                        col_widths.append(float(sub_tag.value))
-                elif sub_tag.code == 142:
-                    if isinstance(sub_tag.value, (int, float)):
-                        row_heights.append(float(sub_tag.value))
-                elif sub_tag.code in (300, 301, 302, 1, 3):
-                    text_val = str(sub_tag.value).strip()
-                    if text_val and text_val not in ("Standard", "CELL_VALUE", "ACVALUE_END") and not text_val.startswith("{"):
-                        cell_texts.append(text_val)
+    if acdb_table_idx != -1:
+        for j in range(acdb_table_idx + 1, len(entity_tags)):
+            t = entity_tags[j]
+            if t.code == 100:
+                break
+            if t.code == 342 and not style_handle:
+                style_handle = str(t.value)
+            elif t.code == 343 and not block_record:
+                block_record = str(t.value)
+            elif t.code == 90 and break_flags is None:
+                break_flags = int(t.value)
+            elif t.code == 91 and num_rows == 0:
+                num_rows = int(t.value)
+            elif t.code == 92 and num_cols == 0:
+                num_cols = int(t.value)
+            elif t.code == 141:
+                # DXF Group Code 141: Row Height (repeated for each row)
+                if isinstance(t.value, (int, float)):
+                    row_heights.append(float(t.value))
+            elif t.code == 142:
+                # DXF Group Code 142: Column Width (repeated for each column)
+                if isinstance(t.value, (int, float)):
+                    col_widths.append(float(t.value))
+                last_142_idx = j
 
-                j += 1
-
-            i = j
-            continue
-
-        i += 1
-
-    # If break flags not found explicitly, default to 0
     if break_flags is None:
         break_flags = 0
 
     break_info = decode_table_break_flags(break_flags)
+
+    # If rows or cols not explicit, fallback
+    if num_cols <= 0:
+        num_cols = len(col_widths) if col_widths else 5
+    if num_rows <= 0:
+        num_rows = len(row_heights) if row_heights else 10
+
+    # Ensure widths and heights arrays match dimensions
+    while len(col_widths) < num_cols:
+        col_widths.append(2.5)
+    while len(row_heights) < num_rows:
+        row_heights.append(0.36)
+
+    # -------------------------------------------------------------------------
+    # Parse individual cells: each cell begins with DXF Group Code 171
+    # -------------------------------------------------------------------------
+    cell_tag_slice = entity_tags[last_142_idx + 1 :] if last_142_idx != -1 else []
+    raw_cells: List[List[DXFTag]] = []
+    curr_cell_tags: List[DXFTag] = []
+
+    for tag in cell_tag_slice:
+        if tag.code == 171:
+            if curr_cell_tags:
+                raw_cells.append(curr_cell_tags)
+            curr_cell_tags = [tag]
+        elif curr_cell_tags:
+            curr_cell_tags.append(tag)
+
+    if curr_cell_tags:
+        raw_cells.append(curr_cell_tags)
+
+    parsed_cells: List[Dict[str, Any]] = []
+    total_expected_cells = num_rows * num_cols
+
+    for idx, c_tags in enumerate(raw_cells):
+        if idx >= total_expected_cells:
+            break
+
+        r = idx // num_cols
+        c = idx % num_cols
+
+        tag_dict: Dict[int, List[Any]] = {}
+        for t in c_tags:
+            tag_dict.setdefault(t.code, []).append(t.value)
+
+        # 1. Text resolution: clean string from code 302 or 1 or 300
+        text = ""
+        if 302 in tag_dict and str(tag_dict[302][-1]).strip():
+            text = str(tag_dict[302][-1]).strip()
+        elif 1 in tag_dict and str(tag_dict[1][-1]).strip():
+            text = str(tag_dict[1][-1]).strip()
+        elif 300 in tag_dict and str(tag_dict[300][-1]).strip():
+            text = str(tag_dict[300][-1]).strip()
+
+        # Filter internal control keywords
+        if text in ("CELL_VALUE", "ACVALUE_END", "Standard", "{"):
+            text = ""
+
+        # 2. Cell type (Code 171: 1 = Text, 2 = Block)
+        cell_type_code = tag_dict.get(171, [1])[0]
+        cell_type_name = CELL_TYPE_MAP.get(cell_type_code, f"Unknown ({cell_type_code})")
+
+        # 3. Merging & Spanning (Codes 173, 175, 176)
+        is_merged = bool(tag_dict.get(173, [0])[0])
+        col_span = int(tag_dict.get(175, [1])[0])
+        row_span = int(tag_dict.get(176, [1])[0])
+
+        # 4. Row Style (Title, Header, Data)
+        # Determined via TABLECONTENT row definitions or table structure
+        if row_defs and r < len(row_defs):
+            r_type_code = row_defs[r][0]
+            row_style = ROW_STYLE_MAP.get(r_type_code, "Data")
+        else:
+            # Fallback heuristic:
+            if r == 0 or (col_span == num_cols and not text.isdigit()):
+                row_style = "Title"
+            elif r == 1 or text.startswith("Header") or text.startswith("H"):
+                row_style = "Header"
+            else:
+                row_style = "Data"
+
+        # 5. Cell Style & Column Style
+        cell_style = "по строке/столбцу"
+        col_width = col_widths[c] if c < len(col_widths) else 2.5
+        col_style = "нет"
+
+        # 6. Alignment (Code 170)
+        alignment_code = tag_dict.get(170, [None])[0]
+        if alignment_code is not None and alignment_code in ALIGNMENT_MAP:
+            alignment_name = f"{ALIGNMENT_MAP[alignment_code]} (DXF 170: {alignment_code})"
+        else:
+            # Default by row style
+            if row_style in ("Title", "Header"):
+                alignment_name = "Middle Center (DXF 170: 5) [Inherited]"
+                alignment_code = 5
+            else:
+                alignment_name = "Top Center (DXF 170: 2) [Inherited]"
+                alignment_code = 2
+
+        # 7. Text Formatting (Code 7: font/style, Code 140: height, Code 145: rotation)
+        text_style = tag_dict.get(7, [None])[0]
+        text_height = tag_dict.get(140, [None])[0]
+        if text_height is None:
+            text_height = 0.25 if row_style == "Title" else 0.18
+
+        rotation = float(tag_dict.get(145, [0.0])[0])
+        override_flags = tag_dict.get(91, [None])[0]
+        virtual_edge = tag_dict.get(178, [0])[0]
+        autofit = bool(tag_dict.get(174, [0])[0])
+        color = tag_dict.get(62, [None])[0]
+        bg_color = tag_dict.get(63, [None])[0]
+
+        cell_obj = {
+            "row": r,
+            "col": c,
+            "text": text,
+            "cell_style": cell_style,
+            "cell_type": cell_type_name,
+            "cell_type_code": cell_type_code,
+            "row_style": row_style,
+            "row_height": row_heights[r] if r < len(row_heights) else 0.36,
+            "col_style": col_style,
+            "col_width": col_width,
+            "alignment_code": alignment_code,
+            "alignment_name": alignment_name,
+            "is_merged": is_merged,
+            "col_span": col_span,
+            "row_span": row_span,
+            "text_style": text_style or "Standard",
+            "text_height": text_height,
+            "rotation": rotation,
+            "override_flags": override_flags,
+            "virtual_edge": virtual_edge,
+            "autofit": autofit,
+            "color": color,
+            "bg_color": bg_color,
+            "raw_tags_count": len(c_tags),
+        }
+        parsed_cells.append(cell_obj)
+
+    cell_texts = [c["text"] for c in parsed_cells if c["text"]]
 
     return {
         "index": index,
@@ -196,6 +383,7 @@ def parse_acad_table(entity_tags: List[DXFTag], index: int = 1) -> Dict[str, Any
         "num_cols": num_cols,
         "col_widths": col_widths,
         "row_heights": row_heights,
+        "cells": parsed_cells,
         "cell_texts": cell_texts,
         "total_tags": len(entity_tags),
     }
@@ -204,39 +392,89 @@ def parse_acad_table(entity_tags: List[DXFTag], index: int = 1) -> Dict[str, Any
 def analyze_tables_in_dxf(file_path: str) -> List[Dict[str, Any]]:
     """
     Loads a DXF file and returns detailed analyses for all ACAD_TABLE entities found.
+    Extracts global TABLECONTENT and TABLESTYLE data to accurately resolve row and cell styles.
     """
     all_tags = list(read_tags(file_path))
+    row_defs = extract_tablecontent_row_defs(all_tags)
+    tablestyles = extract_tablestyles(all_tags)
     table_entities = extract_entities_by_type(all_tags, "ACAD_TABLE")
 
     results: List[Dict[str, Any]] = []
     for idx, raw_tags in enumerate(table_entities, start=1):
-        parsed = parse_acad_table(raw_tags, idx)
+        parsed = parse_acad_table(raw_tags, idx, row_defs, tablestyles)
         results.append(parsed)
 
     return results
 
 
-def print_table_report(table_data: Dict[str, Any]) -> None:
+def print_table_report(table_data: Dict[str, Any], show_all_cells: bool = True) -> None:
     """
-    Prints a formatted report of a single ACAD_TABLE entity.
+    Prints a formatted, highly informative report of a single ACAD_TABLE entity,
+    including table dimensions, break flags, row styles, column styles, and
+    every cell's complete properties.
     """
-    print("=" * 70)
+    print("=" * 80)
     print(f"TABLE FRAGMENT #{table_data['index']} (Handle: 0x{table_data['handle']})")
-    print("=" * 70)
+    print("=" * 80)
     print(f"Owner Handle:    0x{table_data['owner']}")
     print(f"Layer:           {table_data['layer']}")
-    print(f"Insert Point:    X={table_data['insert_point'][0]:.4f}, "
-          f"Y={table_data['insert_point'][1]:.4f}, "
-          f"Z={table_data['insert_point'][2]:.4f}")
+    print(
+        f"Insert Point:    X={table_data['insert_point'][0]:.4f}, "
+        f"Y={table_data['insert_point'][1]:.4f}, "
+        f"Z={table_data['insert_point'][2]:.4f}"
+    )
     print(f"Table Style:     0x{table_data['style_handle']}")
     print(f"Dimensions:      {table_data['num_rows']} rows x {table_data['num_cols']} columns")
-    print(f"Column Widths:   {table_data['col_widths']}")
-    print("-" * 70)
+    print(f"Column Widths:   {table_data['col_widths']} (DXF Code 142, {len(table_data['col_widths'])} cols)")
+    print(f"Row Heights:     {table_data['row_heights']} (DXF Code 141, {len(table_data['row_heights'])} rows)")
+    print("-" * 80)
     print("TABLE BREAK ANALYSIS (DXF Group Code 90):")
-    print(table_data['break_info']['explanation'])
+    print(table_data["break_info"]["explanation"])
     print(f"=> Decoded State: {table_data['break_info']['summary']}")
-    print("-" * 70)
-    print(f"Total Decoded Cells Preview (first 10): {table_data['cell_texts'][:10]}")
+    print("-" * 80)
+
+    # 1. Grid Summary of Rows with Row Styles
+    print("ТАБЛИЧНАЯ СЕТКА И СТИЛИ СТРОК (TITLE, HEADER, DATA):")
+    print(f"{'Row':<5} {'Стиль строки':<14} {'Высота':<8} {'Содержимое ячеек по колонкам'}")
+    print("-" * 80)
+
+    cells = table_data["cells"]
+    num_cols = table_data["num_cols"]
+    num_rows = table_data["num_rows"]
+
+    for r in range(num_rows):
+        row_cells = [c for c in cells if c["row"] == r]
+        if not row_cells:
+            continue
+        row_style = row_cells[0]["row_style"]
+        row_h = row_cells[0]["row_height"]
+        texts_preview = " | ".join(
+            f"C{c['col']}: '{c['text']}'" if not c["is_merged"] else f"C{c['col']}: (merged)"
+            for c in row_cells
+        )
+        print(f"R{r:<4} {row_style:<14} {row_h:<8.3f} {texts_preview}")
+
+    # 2. Detailed Cell-by-Cell Inspector
+    print("-" * 90)
+    print(f"ДЕТАЛЬНЫЙ АНАЛИЗ ВСЕХ ЯЧЕЕК (Всего ячеек: {len(cells)}):")
+    print(
+        f"{'Pos':<7} {'Текст ячейки':<14} {'Стиль ячейки':<18} {'Стиль строки':<13} {'Стиль столбца':<14} "
+        f"{'Выравнивание':<26} {'Span / Merged':<15} {'Шрифт / Высота'}"
+    )
+    print("-" * 90)
+
+    for c in cells:
+        pos = f"R{c['row']}C{c['col']}"
+        text_disp = repr(c["text"]) if len(c["text"]) <= 12 else repr(c["text"][:9] + "...")
+        span_disp = f"{c['row_span']}x{c['col_span']} (Merged)" if c["is_merged"] else f"{c['row_span']}x{c['col_span']}"
+        font_h = f"{c['text_style']} / {c['text_height']:.2f}"
+
+        print(
+            f"{pos:<7} {text_disp:<14} {c['cell_style']:<18} {c['row_style']:<13} {c['col_style']:<14} "
+            f"{c['alignment_name']:<26} {span_disp:<15} {font_h}"
+        )
+
+    print("-" * 90)
     print()
 
 

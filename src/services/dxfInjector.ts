@@ -175,14 +175,14 @@ export function generateAcadTableEntityDxf(
     'Standard',
   ];
 
-  // Output column widths
-  for (const w of tableDef.columnWidths) {
-    lines.push('141', w.toFixed(4));
+  // Output row heights (DXF Group Code 141, repeated per row)
+  for (const h of tableDef.rowHeights) {
+    lines.push('141', h.toFixed(4));
   }
 
-  // Output row heights
-  for (const h of tableDef.rowHeights) {
-    lines.push('142', h.toFixed(4));
+  // Output column widths (DXF Group Code 142, repeated per column)
+  for (const w of tableDef.columnWidths) {
+    lines.push('142', w.toFixed(4));
   }
 
   // Output cell strings
