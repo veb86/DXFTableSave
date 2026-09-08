@@ -624,7 +624,7 @@ class TableReader:
 
 def main():
     """Main entry point for table reading and reconstruction."""
-    dxf_path = "/workspace/acadtable2007.dxf"
+    dxf_path = "acadtable2007.dxf"
     
     print("=" * 70)
     print("DXF TABLE READER AND RECONSTRUCTOR")
