@@ -145,29 +145,71 @@ class TableEntity:
     table_value: int = 0
     content_handle: str = ""
     
-    # Break/Fragment data for split tables
-    break_flags: int = 0              # DXF 90 (первое значение) - битовые флаги разбиения таблицы
-    break_auto_flag: int = 0          # DXF 90 (второе значение) - дополнительные флаги
-    row_break_flag: int = 0           # DXF 91 (второе значение) - флаг разрыва строк
-    break_flow: int = 0               # DXF 175 - направление потока (0=Down, 1=Right, 5=Left-to-Right then Down)
-    break_height: float = 0.0         # DXF 142 (первое) - высота фрагмента
-    break_spacing: float = 0.0        # DXF 143 - зазор между фрагментами
-    column_widths: List[float] = field(default_factory=list)  # DXF 142 (остальные) - ширины колонок
-    row_margins: List[float] = field(default_factory=list)    # DXF 141 - отступы строк
-    cell_margin: float = 0.0          # DXF 145 - отступ ячейки
-    grid_horizontal_flag: int = 0     # DXF 171
-    grid_vertical_flag: int = 0       # DXF 172
-    title_suppressed: bool = False    # DXF 173
-    header_suppressed: bool = False   # DXF 174
-    flow_direction_type: int = 0      # DXF 176
-    unknown_178: int = 0              # DXF 178
+    # === BREAK/FRAGMENT DATA - ИСПРАВЛЕННАЯ КАРТА DXF ТЕГОВ ===
+    # Согласно спецификации AutoCAD 2007+ для AcDbTable
+    
+    # DXF 90: Битовая маска флагов разбиения таблицы
+    # Бит 0 (1): Break Enabled (разбиение включено)
+    # Бит 1 (2): Flow Direction Override
+    # Бит 2 (4): Auto Break (автоматическое разбиение)
+    # Бит 3 (8): Break Repeat Header
+    # Бит 4 (16): Allow Manual Positioning
+    break_flags: int = 0
+    
+    # Вычисленные флаги
+    break_enabled: bool = False           # Бит 0 флага 90
+    flow_direction_override: bool = False # Бит 1 флага 90
+    auto_break: bool = False              # Бит 2 флага 90
+    break_repeat_header: bool = False     # Бит 3 флага 90
+    allow_manual_positioning: bool = False # Бит 4 флага 90
+    
+    # DXF 91: Флаги разрыва строк
+    # Значение 262144 (2^18) = AcDb::kTableBreakCustomOffsets (пользовательское позиционирование)
+    row_break_flags: int = 0
+    
+    # DXF 140: Break Height (высота фрагмента)
+    break_height: float = 0.0
+    
+    # DXF 141: Break Spacing (зазор между фрагментами)
+    break_spacing: float = 0.0
+    
+    # DXF 142: Column Widths (ширины колонок) - список значений
+    column_widths: List[float] = field(default_factory=list)
+    
+    # DXF 143: Top Cell Margin (верхний отступ ячейки)
+    cell_margin_top: float = 0.0
+    
+    # DXF 144: Bottom Cell Margin (нижний отступ ячейки)
+    cell_margin_bottom: float = 0.0
+    
+    # DXF 145: Rotation Angle (угол поворота в радианах)
+    rotation_angle: float = 0.0
+    
+    # DXF 146: Left Cell Margin (левый отступ ячейки)
+    cell_margin_left: float = 0.0
+    
+    # DXF 147: Right Cell Margin (правый отступ ячейки)
+    cell_margin_right: float = 0.0
+    
+    # DXF 175: Flow Direction (направление потока)
+    # 1 = Right (слева направо), 2 = Down (сверху вниз)
+    # 5 = Custom (пользовательское, Left-to-Right then Down)
+    flow_direction: int = 0
+    
+    # Grid flags
+    grid_horizontal_flag: int = 0       # DXF 171
+    grid_vertical_flag: int = 0         # DXF 172
+    title_suppressed: bool = False      # DXF 173
+    header_suppressed: bool = False     # DXF 174
+    flow_direction_type: int = 0        # DXF 176
+    unknown_178: int = 0                # DXF 178
     
     # Cell data
-    cell_binary_data: List[bytes] = field(default_factory=list)  # DXF 310 - бинарные данные ячеек
-    cell_markers: List[str] = field(default_factory=list)        # DXF 300, 301 - маркеры ячеек
+    cell_binary_data: List[bytes] = field(default_factory=list)  # DXF 310
+    cell_markers: List[str] = field(default_factory=list)        # DXF 300, 301, 302
     
     # Block reference
-    anonymous_block_name: str = ""    # DXF 2 - имя анонимного блока (*T...)
+    anonymous_block_name: str = ""    # DXF 2
     
     raw_data: Optional[RawDXFData] = None
     
@@ -335,7 +377,21 @@ class TableReader:
         return raw_data
     
     def parse_table_entity(self, entity: DXFEntity) -> TableEntity:
-        """Parse an ACAD_TABLE entity into TableEntity including break/fragment data and cell data."""
+        """Parse an ACAD_TABLE entity into TableEntity including break/fragment data and cell data.
+        
+        Correct DXF tag mapping according to AutoCAD 2007+ specification:
+        - DXF 90: Break flags bitmask (Bit 0 = Break Enabled, Bit 2 = Auto Break)
+        - DXF 91: Row break flags (e.g., 262144 = custom offsets)
+        - DXF 140: Break Height (height of each fragment)
+        - DXF 141: Break Spacing (gap between fragments)
+        - DXF 142: Column widths (list of floats)
+        - DXF 143: Top cell margin
+        - DXF 144: Bottom cell margin
+        - DXF 145: Rotation angle (radians)
+        - DXF 146: Left cell margin
+        - DXF 147: Right cell margin
+        - DXF 175: Flow direction (1=Right, 2=Down, 5=Custom)
+        """
         table_entity = TableEntity()
         table_entity.handle = entity.get_first_value(5, '')
         table_entity.owner_handle = entity.get_first_value(330, '')
@@ -353,16 +409,31 @@ class TableReader:
         dir_z = entity.get_first_value(31, 0.0)
         table_entity.horizontal_direction = (dir_x, dir_y, dir_z)
         
-        # Basic dimensions - codes 90 (rows), 91 (cols)
-        # NOTE: In split tables, code 90 may appear twice: [total_rows, flags]
+        # === BASIC DIMENSIONS ===
+        # Code 90: First value = number of rows, may have second value for flags
         vals_90 = entity.get_values(90)
-        table_entity.n_rows = vals_90[0] if vals_90 else 0
-        table_entity.break_flags = vals_90[0] if vals_90 else 0  # First value is also break flags
-        table_entity.break_auto_flag = vals_90[1] if len(vals_90) > 1 else 0
+        if vals_90:
+            table_entity.n_rows = vals_90[0]
+            table_entity.break_flags = vals_90[0]  # Store raw value for bit decoding
         
+        # Code 91: First value = number of columns, second value = row break flags
         vals_91 = entity.get_values(91)
-        table_entity.n_cols = vals_91[0] if vals_91 else 0
-        table_entity.row_break_flag = vals_91[1] if len(vals_91) > 1 else 0
+        if vals_91:
+            table_entity.n_cols = vals_91[0]
+            if len(vals_91) > 1:
+                table_entity.row_break_flags = vals_91[1]
+        
+        # === DECODE BREAK FLAGS (DXF 90) ===
+        # Bit 0 (1): Break Enabled
+        # Bit 1 (2): Flow Direction Override  
+        # Bit 2 (4): Auto Break
+        # Bit 3 (8): Break Repeat Header
+        # Bit 4 (16): Allow Manual Positioning
+        table_entity.break_enabled = bool(table_entity.break_flags & 1)
+        table_entity.flow_direction_override = bool(table_entity.break_flags & 2)
+        table_entity.auto_break = bool(table_entity.break_flags & 4)
+        table_entity.break_repeat_header = bool(table_entity.break_flags & 8)
+        table_entity.allow_manual_positioning = bool(table_entity.break_flags & 16)
         
         # Style and block references
         table_entity.table_style_id = entity.get_first_value(340, '')
@@ -371,7 +442,7 @@ class TableReader:
         # Anonymous block name (code 2)
         table_entity.anonymous_block_name = entity.get_first_value(2, '')
         
-        # Override flags (code 92 may have multiple values)
+        # Override flags (code 92)
         vals_92 = entity.get_values(92)
         table_entity.override_flag = vals_92[0] if vals_92 else 0
         
@@ -381,26 +452,35 @@ class TableReader:
         table_entity.border_lineweight_override_flag = entity.get_first_value(95, 0)
         table_entity.table_value = entity.get_first_value(96, 0)
         
-        # === BREAK/FRAGMENT DATA (critical for split tables) ===
+        # === BREAK/FRAGMENT DATA - CORRECTED MAPPING ===
         
-        # DXF 175: Break flow direction
-        # 0 = Down, 1 = Right, 5 = Left-to-Right then Down
-        table_entity.break_flow = entity.get_first_value(175, 0)
+        # DXF 140: Break Height (высота фрагмента)
+        table_entity.break_height = entity.get_first_value(140, 0.0)
         
-        # DXF 142: Break height (first value) and column widths (remaining values)
-        all_142_values = entity.get_values(142)
-        if all_142_values:
-            table_entity.break_height = all_142_values[0] if all_142_values else 0.0
-            table_entity.column_widths = all_142_values[1:] if len(all_142_values) > 1 else []
+        # DXF 141: Break Spacing (зазор между фрагментами)
+        table_entity.break_spacing = entity.get_first_value(141, 0.0)
         
-        # DXF 143: Break spacing (gap between fragments)
-        table_entity.break_spacing = entity.get_first_value(143, 0.0)
+        # DXF 142: Column Widths (ширины колонок) - ВСЕ значения кода 142
+        table_entity.column_widths = entity.get_values(142)
         
-        # DXF 141: Row margins
-        table_entity.row_margins = entity.get_values(141)
+        # DXF 143: Top Cell Margin (верхний отступ ячейки)
+        table_entity.cell_margin_top = entity.get_first_value(143, 0.0)
         
-        # DXF 145: Cell margin
-        table_entity.cell_margin = entity.get_first_value(145, 0.0)
+        # DXF 144: Bottom Cell Margin (нижний отступ ячейки)
+        table_entity.cell_margin_bottom = entity.get_first_value(144, 0.0)
+        
+        # DXF 145: Rotation Angle (угол поворота в радианах)
+        table_entity.rotation_angle = entity.get_first_value(145, 0.0)
+        
+        # DXF 146: Left Cell Margin (левый отступ ячейки)
+        table_entity.cell_margin_left = entity.get_first_value(146, 0.0)
+        
+        # DXF 147: Right Cell Margin (правый отступ ячейки)
+        table_entity.cell_margin_right = entity.get_first_value(147, 0.0)
+        
+        # DXF 175: Flow Direction (направление потока)
+        # 1 = Right (слева направо), 2 = Down (сверху вниз), 5 = Custom
+        table_entity.flow_direction = entity.get_first_value(175, 0)
         
         # Grid flags
         table_entity.grid_horizontal_flag = entity.get_first_value(171, 0)
@@ -427,8 +507,8 @@ class TableReader:
             elif isinstance(bd, bytes):
                 table_entity.cell_binary_data.append(bd)
         
-        # DXF 300, 301: Cell markers
-        table_entity.cell_markers = entity.get_values(300) + entity.get_values(301)
+        # DXF 300, 301, 302: Cell markers
+        table_entity.cell_markers = entity.get_values(300) + entity.get_values(301) + entity.get_values(302)
         
         # Find content and geometry handles from hard pointers (code 340+)
         ptr_handles = entity.get_values(340)
@@ -818,30 +898,45 @@ class TableReader:
                 print(f"  Block Record: {table_entity.block_record_handle}")
                 print(f"  Anonymous Block: {table_entity.anonymous_block_name}")
                 
-                # Print break/fragment data
-                print(f"\n  === BREAK/FRAGMENT DATA ===")
-                print(f"  Break Flags (DXF 90 first): {table_entity.break_flags} (binary: {bin(table_entity.break_flags)})")
-                print(f"  Break Auto Flag (DXF 90 second): {table_entity.break_auto_flag}")
-                print(f"  Row Break Flag (DXF 91 second): {table_entity.row_break_flag}")
-                print(f"  Break Flow (DXF 175): {table_entity.break_flow}")
-                print(f"  Break Height (DXF 142 first): {table_entity.break_height}")
-                print(f"  Break Spacing (DXF 143): {table_entity.break_spacing}")
-                print(f"  Column Widths (DXF 142 list): {table_entity.column_widths}")
-                print(f"  Row Margins (DXF 141): {table_entity.row_margins}")
-                print(f"  Cell Margin (DXF 145): {table_entity.cell_margin}")
-                print(f"  Grid Horizontal Flag (DXF 171): {table_entity.grid_horizontal_flag}")
-                print(f"  Grid Vertical Flag (DXF 172): {table_entity.grid_vertical_flag}")
-                print(f"  Title Suppressed (DXF 173): {table_entity.title_suppressed}")
-                print(f"  Header Suppressed (DXF 174): {table_entity.header_suppressed}")
-                print(f"  Flow Direction Type (DXF 176): {table_entity.flow_direction_type}")
-                print(f"  Unknown 178: {table_entity.unknown_178}")
+                # Print break/fragment data - CORRECTED MAPPING
+                print(f"\n  === BREAK/FRAGMENT DATA (CORRECTED MAPPING) ===")
+                print(f"  Break Flags (DXF 90): {table_entity.break_flags} (binary: {bin(table_entity.break_flags)})")
+                print(f"  Row Break Flags (DXF 91 second): {table_entity.row_break_flags}")
                 
-                # Decode break flags
-                if table_entity.break_flags:
-                    print(f"\n  Break Flags Decoded:")
-                    print(f"    Bit 0 (Break Enabled): {'YES' if table_entity.break_flags & 1 else 'NO'}")
-                    print(f"    Bit 1 (Flow Direction): {'Right/Custom' if table_entity.break_flags & 2 else 'Down'}")
-                    print(f"    Bit 2 (Auto Break): {'YES' if table_entity.break_flags & 4 else 'NO'}")
+                # Decoded flags
+                print(f"\n  Break Flags Decoded:")
+                print(f"    Bit 0 (Break Enabled): {'YES' if table_entity.break_enabled else 'NO'}")
+                print(f"    Bit 1 (Flow Direction Override): {'YES' if table_entity.flow_direction_override else 'NO'}")
+                print(f"    Bit 2 (Auto Break): {'YES' if table_entity.auto_break else 'NO'}")
+                print(f"    Bit 3 (Break Repeat Header): {'YES' if table_entity.break_repeat_header else 'NO'}")
+                print(f"    Bit 4 (Allow Manual Positioning): {'YES' if table_entity.allow_manual_positioning else 'NO'}")
+                
+                # Check for custom offsets flag (262144 = 2^18)
+                if table_entity.row_break_flags:
+                    print(f"\n  Row Break Flags Analysis:")
+                    print(f"    Raw value: {table_entity.row_break_flags}")
+                    print(f"    Has Custom Offsets (bit 18, 262144): {'YES' if table_entity.row_break_flags & 262144 else 'NO'}")
+                
+                print(f"\n  Physical Parameters:")
+                print(f"    Break Height (DXF 140): {table_entity.break_height}")
+                print(f"    Break Spacing (DXF 141): {table_entity.break_spacing}")
+                print(f"    Column Widths (DXF 142): {table_entity.column_widths}")
+                print(f"    Flow Direction (DXF 175): {table_entity.flow_direction} (1=Right, 2=Down, 5=Custom)")
+                
+                print(f"\n  Cell Margins:")
+                print(f"    Top (DXF 143): {table_entity.cell_margin_top}")
+                print(f"    Bottom (DXF 144): {table_entity.cell_margin_bottom}")
+                print(f"    Left (DXF 146): {table_entity.cell_margin_left}")
+                print(f"    Right (DXF 147): {table_entity.cell_margin_right}")
+                print(f"    Rotation Angle (DXF 145): {table_entity.rotation_angle} rad ({table_entity.rotation_angle * 180 / 3.14159:.2f}°)")
+                
+                print(f"\n  Grid and Suppression:")
+                print(f"    Grid Horizontal Flag (DXF 171): {table_entity.grid_horizontal_flag}")
+                print(f"    Grid Vertical Flag (DXF 172): {table_entity.grid_vertical_flag}")
+                print(f"    Title Suppressed (DXF 173): {table_entity.title_suppressed}")
+                print(f"    Header Suppressed (DXF 174): {table_entity.header_suppressed}")
+                print(f"    Flow Direction Type (DXF 176): {table_entity.flow_direction_type}")
+                print(f"    Unknown 178: {table_entity.unknown_178}")
                 
                 # Print cell data info
                 print(f"\n  === CELL DATA ===")
