@@ -1,1 +1,4 @@
-Nothing should be ignored based on the provided file changes. The only added file is `deep_table_analyzer.py`, which appears to be a Python source code file and should not be ignored.
+```
+__pycache__/
+*.pyc
+```

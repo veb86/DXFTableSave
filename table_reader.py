@@ -250,7 +250,18 @@ class TableReader:
     
     def find_table_entities(self) -> List[DXFEntity]:
         """Find all ACAD_TABLE entities in ENTITIES section."""
-        return self.parser.find_entities_by_type('ACAD_TABLE')
+        # Ищем сущности с именем ACAD_TABLE или содержащие AcDbTable
+        result = []
+        for entity in self.parser.entities:
+            if entity.name == 'ACAD_TABLE':
+                result.append(entity)
+            else:
+                # Проверяем, есть ли внутри сущности тег 100: AcDbTable
+                for tag in entity.tags:
+                    if tag.code == 100 and tag.value == 'AcDbTable':
+                        result.append(entity)
+                        break
+        return result
     
     def find_all_table_fragments(self) -> Dict[str, List[DXFEntity]]:
         """
@@ -263,12 +274,13 @@ class TableReader:
         fragments = []
         
         for entity in self.parser.entities:
-            # Check if this entity has AcDbTable class marker
-            has_acdb_table = False
-            for tag in entity.tags:
-                if tag.code == 0 and tag.value == 'AcDbTable':
-                    has_acdb_table = True
-                    break
+            # Check if this entity has AcDbTable class marker or is ACAD_TABLE
+            has_acdb_table = entity.name == 'ACAD_TABLE'
+            if not has_acdb_table:
+                for tag in entity.tags:
+                    if tag.code == 100 and tag.value == 'AcDbTable':
+                        has_acdb_table = True
+                        break
             
             if has_acdb_table:
                 fragments.append(entity)
@@ -446,22 +458,26 @@ class TableReader:
                         
         return style
     
-    def decode_cell_data_from_binary(self, binary_data: bytes) -> List[CellData]:
+    def decode_cell_data_from_binary(self, binary_data) -> List[CellData]:
         """
         Decode cell data from binary format (group 310).
         
-        The binary data contains serialized cell information including:
-        - Cell position (row, col)
-        - Text content
-        - Style references
-        - Formatting data
-        
-        AutoCAD stores table cell data in a proprietary binary format.
-        We extract what we can using UTF-16-LE decoding and pattern matching.
+        В DXF файле данные 310 могут быть строкой (hex-представление) или bytes.
         """
         cells = []
         
         try:
+            # Если это строка (hex representation), конвертируем в bytes
+            if isinstance(binary_data, str):
+                # Строка содержит hex-представление байтов
+                try:
+                    binary_data = bytes.fromhex(binary_data)
+                except:
+                    pass
+            
+            if not isinstance(binary_data, bytes):
+                return cells
+            
             # Try to decode as UTF-16-LE (common in AutoCAD binary data)
             text = binary_data.decode('utf-16-le', errors='ignore')
             
@@ -486,6 +502,12 @@ class TableReader:
                 cell.cell_type = 'Header'
                 cell.text = f'Header-{match}'
                 cells.append(cell)
+            
+            # Также ищем простые текстовые значения ячеек
+            # Ищем паттерны типа "txt.shx" которые могут указывать на содержимое ячеек
+            if 'txt.shx' in text:
+                # Это может быть указание на стиль текста ячейки
+                pass
                 
             # Also look for text style names that indicate cell content
             if 'Times New Roman' in text and not cells:
@@ -499,6 +521,100 @@ class TableReader:
         except Exception as e:
             pass
             
+        return cells
+    
+    def parse_table_cells_from_entity(self, entity: DXFEntity) -> Dict[tuple, CellData]:
+        """
+        Извлекает данные ячеек напрямую из сущности ACAD_TABLE.
+        
+        В AutoCAD 2007 данные ячеек хранятся в бинарном формате (группа 310).
+        Анализирует бинарные данные и извлекает информацию о ячейках.
+        Возвращает словарь {(row, col): CellData}.
+        """
+        cells = {}
+        
+        # Ищем бинарные данные (код 310)
+        binary_data_list = []
+        for tag in entity.tags:
+            if tag.code == 310 and isinstance(tag.value, bytes):
+                binary_data_list.append(tag.value)
+        
+        # Декодируем каждую порцию бинарных данных
+        cell_index = 0
+        for binary_data in binary_data_list:
+            decoded_cells = self.decode_cell_data_from_binary(binary_data)
+            for cell in decoded_cells:
+                # Пытаемся определить позицию ячейки
+                # В упрощенном варианте просто присваиваем последовательные индексы
+                row = cell_index // entity.get_first_value(91, 10)  # делим на количество колонок
+                col = cell_index % entity.get_first_value(91, 10)
+                cell.row = row
+                cell.col = col
+                cells[(row, col)] = cell
+                cell_index += 1
+        
+        # Если не удалось извлечь из бинарных данных, пробуем текстовые CELL_VALUE
+        if not cells:
+            tags = entity.tags
+            i = 0
+            current_cell = None
+            current_row = 0
+            current_col = 0
+            
+            while i < len(tags):
+                tag = tags[i]
+                
+                if tag.code == 301 and tag.value == 'CELL_VALUE':
+                    # Начало данных ячейки
+                    current_cell = CellData()
+                    current_cell.row = current_row
+                    current_cell.col = current_col
+                    i += 1
+                    continue
+                
+                if current_cell is not None:
+                    if tag.code == 93:
+                        i += 1
+                        continue
+                    elif tag.code == 90:
+                        i += 1
+                        continue
+                    elif tag.code == 1:
+                        # Текст ячейки
+                        current_cell.text = str(tag.value)
+                        cells[(current_row, current_col)] = current_cell
+                        current_col += 1
+                        if current_col >= entity.get_first_value(91, 10):
+                            current_col = 0
+                            current_row += 1
+                        current_cell = None
+                        i += 1
+                        continue
+                    elif tag.code == 300:
+                        i += 1
+                        continue
+                    elif tag.code == 302:
+                        if hasattr(tag.value, 'real'):
+                            i += 1
+                            continue
+                        current_cell.text = str(tag.value) if tag.value else current_cell.text
+                        i += 1
+                        continue
+                    elif tag.code == 304:
+                        cells[(current_row, current_col)] = current_cell
+                        current_cell = None
+                        current_col += 1
+                        if current_col >= entity.get_first_value(91, 10):
+                            current_col = 0
+                            current_row += 1
+                        i += 1
+                        continue
+                    else:
+                        i += 1
+                        continue
+                else:
+                    i += 1
+        
         return cells
     
     def reconstruct_cells_from_tags(self, table_entity: TableEntity, 
