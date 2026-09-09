@@ -95,10 +95,33 @@ export const AnalysisOverview: React.FC<AnalysisOverviewProps> = ({ analysis }) 
                 key={tbl.id}
                 className="bg-slate-900/80 border border-purple-800/30 p-3 rounded-lg text-xs font-mono"
               >
-                <div className="text-purple-300 font-bold mb-1">Fragment #{i + 1}</div>
+                <div className="text-purple-300 font-bold mb-1 flex items-center justify-between">
+                  <span>Fragment #{i + 1}</span>
+                  <span className="text-emerald-400 font-semibold">{tbl.breakHeight ? tbl.breakHeight.toFixed(2) : '—'} мм</span>
+                </div>
                 <div className="text-slate-400 text-[11px]">Handle: <span className="text-slate-200">{tbl.handle}</span></div>
                 <div className="text-slate-400 text-[11px]">Insert: <span className="text-cyan-300">({tbl.x.toFixed(1)}, {tbl.y.toFixed(1)})</span></div>
                 <div className="text-slate-400 text-[11px]">Size: <span className="text-slate-200">{tbl.rows}R x {tbl.cols}C</span></div>
+                <div className="text-slate-400 text-[11px]">
+                  Направление: <span className="text-indigo-300 font-semibold">{tbl.flowDirection || 'Вниз'}</span>
+                </div>
+                <div className="text-slate-400 text-[11px]">
+                  Разрыв: <span className="text-purple-300 font-semibold">{tbl.breakDirection || 'Вправо'}</span> ({tbl.breakSpacing ? `${tbl.breakSpacing.toFixed(2)} мм` : '0.99 мм'})
+                </div>
+                <div className="text-slate-400 text-[11px]">
+                  Высота разбиения: <span className="text-purple-300">{tbl.breakHeight ? tbl.breakHeight.toFixed(2) : '—'} мм</span>
+                </div>
+                {tbl.manualBreakHeight !== undefined && (
+                  <div className="text-slate-400 text-[11px]">
+                    Ручная высота: <span className="text-emerald-300">{tbl.manualBreakHeight.toFixed(2)} мм</span>
+                  </div>
+                )}
+                <div className="text-slate-400 text-[11px]">
+                  Повтор верхних меток:{' '}
+                  <span className={tbl.repeatTopLabels ? 'text-indigo-300 font-semibold' : 'text-slate-500'}>
+                    {tbl.repeatTopLabels ? `Да (${tbl.topLabelsRowCount || 0} стр.)` : 'Нет'}
+                  </span>
+                </div>
                 <div className="text-slate-400 text-[11px]">Layer: <span className="text-slate-200">{tbl.layer}</span></div>
                 {tbl.breakOptionInfo && (
                   <div className="mt-1.5 pt-1.5 border-t border-purple-900/40 text-[10px]">

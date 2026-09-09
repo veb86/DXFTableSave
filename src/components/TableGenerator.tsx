@@ -93,9 +93,15 @@ export const TableGenerator: React.FC<TableGeneratorProps> = ({
     insertZ: 0,
     layer: 'TABLES',
     enableSplitting: false,
+    splitMethod: 'manual_height',
     rowsPerFragment: 5,
+    manualBreakHeight: 40.0,
+    repeatHeaderOnSplit: true,
+    repeatTopLabels: true,
     fragmentOffsetX: 160,
     fragmentOffsetY: 0,
+    fragmentPositions: [],
+    fragmentManualHeights: [],
     injectionMode: 'vector_table', // Default to vector table for guaranteed 100% CAD compatibility
   });
 
@@ -433,12 +439,12 @@ export const TableGenerator: React.FC<TableGeneratorProps> = ({
           </div>
         </div>
 
-        {/* Table Splitting & Break Engine (Port of create_zcad_table.py) */}
+        {/* Table Splitting & Break Engine (Port of create_zcad_table.py with Manual Break Height) */}
         <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-xl flex flex-col gap-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
               <Split className="w-4 h-4 text-purple-400" />
-              <span>Multi-Fragment Table Breaking</span>
+              <span>Multi-Fragment Table Breaking (Разбиение таблицы)</span>
             </div>
             <label className="relative inline-flex items-center cursor-pointer">
               <input
@@ -454,67 +460,221 @@ export const TableGenerator: React.FC<TableGeneratorProps> = ({
           </div>
 
           <p className="text-xs text-slate-400">
-            Automatically splits large schedules into side-by-side or stacked table fragments
-            with preserved headers.
+            Разбивает длинные спецификации на несколько фрагментов с контролем высоты переноса строк и произвольной позицией.
           </p>
 
           {tableDef.enableSplitting ? (
-            <div className="grid grid-cols-3 gap-2 mt-1">
+            <div className="space-y-3 mt-1">
+              {/* Split Method Selector */}
               <div>
-                <label className="block text-[11px] text-slate-400 mb-1">Rows / Frag</label>
-                <input
-                  type="number"
-                  min="2"
-                  value={tableDef.rowsPerFragment}
-                  onChange={(e) =>
-                    setTableDef((p) => ({
-                      ...p,
-                      rowsPerFragment: Math.max(1, parseInt(e.target.value) || 5),
-                    }))
-                  }
-                  className="w-full px-2 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-slate-200"
-                />
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1.5">
+                  Метод переноса строк в следующий фрагмент:
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTableDef((p) => ({ ...p, splitMethod: 'manual_height' }))}
+                    className={`px-3 py-2 text-xs font-semibold rounded-lg border transition-all text-left flex flex-col gap-0.5 ${
+                      tableDef.splitMethod === 'manual_height'
+                        ? 'bg-purple-950/80 border-purple-500 text-purple-200 shadow-sm'
+                        : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <span>Задание высоты вручную (Manual Height)</span>
+                    <span className="text-[10px] font-normal text-slate-400">
+                      Перенос строк после достижения заданной высоты
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTableDef((p) => ({ ...p, splitMethod: 'rows' }))}
+                    className={`px-3 py-2 text-xs font-semibold rounded-lg border transition-all text-left flex flex-col gap-0.5 ${
+                      tableDef.splitMethod === 'rows'
+                        ? 'bg-purple-950/80 border-purple-500 text-purple-200 shadow-sm'
+                        : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    <span>По числу строк (Rows Count)</span>
+                    <span className="text-[10px] font-normal text-slate-400">
+                      Фиксированное количество строк на фрагмент
+                    </span>
+                  </button>
+                </div>
               </div>
-              <div>
-                <label className="block text-[11px] text-slate-400 mb-1">Offset dX (mm)</label>
-                <input
-                  type="number"
-                  value={tableDef.fragmentOffsetX}
-                  onChange={(e) =>
-                    setTableDef((p) => ({
-                      ...p,
-                      fragmentOffsetX: parseFloat(e.target.value) || 0,
-                    }))
-                  }
-                  className="w-full px-2 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-slate-200"
-                />
+
+              {/* Primary parameter input based on split method */}
+              <div className="bg-slate-950/60 border border-purple-900/40 p-3 rounded-lg">
+                {tableDef.splitMethod === 'manual_height' ? (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-semibold text-purple-300">
+                        Заданная высота разбиения вручную (Manual Break Height):
+                      </label>
+                      <span className="text-xs font-mono font-bold text-emerald-400">
+                        {tableDef.manualBreakHeight} мм
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="number"
+                        step="1"
+                        min={tableDef.rowHeight * 2}
+                        value={tableDef.manualBreakHeight}
+                        onChange={(e) =>
+                          setTableDef((p) => ({
+                            ...p,
+                            manualBreakHeight: Math.max(
+                              p.rowHeight * 1.5,
+                              parseFloat(e.target.value) || 40.0
+                            ),
+                          }))
+                        }
+                        className="w-32 px-3 py-1.5 bg-slate-900 border border-purple-600/70 rounded-lg text-sm font-mono font-bold text-white focus:outline-none focus:border-purple-400"
+                      />
+                      <div className="text-[11px] text-slate-400">
+                        Высота строки: <span className="font-mono text-slate-200">{tableDef.rowHeight} мм</span>.
+                        Вместимость: <span className="font-mono text-purple-300 font-bold">
+                          ~{Math.max(1, Math.floor((tableDef.manualBreakHeight - tableDef.rowHeight) / tableDef.rowHeight))}
+                        </span> строк данных на фрагмент.
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-xs font-semibold text-purple-300 mb-1">
+                      Количество строк данных на фрагмент:
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={tableDef.rowsPerFragment}
+                      onChange={(e) =>
+                        setTableDef((p) => ({
+                          ...p,
+                          rowsPerFragment: Math.max(1, parseInt(e.target.value) || 5),
+                        }))
+                      }
+                      className="w-32 px-3 py-1.5 bg-slate-900 border border-purple-600/70 rounded-lg text-sm font-mono font-bold text-white focus:outline-none focus:border-purple-400"
+                    />
+                  </div>
+                )}
               </div>
-              <div>
-                <label className="block text-[11px] text-slate-400 mb-1">Offset dY (mm)</label>
-                <input
-                  type="number"
-                  value={tableDef.fragmentOffsetY}
-                  onChange={(e) =>
-                    setTableDef((p) => ({
-                      ...p,
-                      fragmentOffsetY: parseFloat(e.target.value) || 0,
-                    }))
-                  }
-                  className="w-full px-2 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs font-mono text-slate-200"
-                />
+
+              {/* Fragment Positioning Settings */}
+              <div className="bg-slate-950/50 border border-slate-800 p-3 rounded-lg">
+                <div className="text-xs font-semibold text-slate-300 mb-2">
+                  Позиционирование фрагментов на чертеже:
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Смещение dX (мм)</label>
+                    <input
+                      type="number"
+                      value={tableDef.fragmentOffsetX}
+                      onChange={(e) =>
+                        setTableDef((p) => ({
+                          ...p,
+                          fragmentOffsetX: parseFloat(e.target.value) || 0,
+                        }))
+                      }
+                      className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-slate-200"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-slate-400 mb-1">Смещение dY (мм)</label>
+                    <input
+                      type="number"
+                      value={tableDef.fragmentOffsetY}
+                      onChange={(e) =>
+                        setTableDef((p) => ({
+                          ...p,
+                          fragmentOffsetY: parseFloat(e.target.value) || 0,
+                        }))
+                      }
+                      className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs font-mono text-slate-200"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5 mt-2.5 pt-2 border-t border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="repeatTopLabels"
+                      checked={tableDef.repeatTopLabels}
+                      onChange={(e) =>
+                        setTableDef((p) => ({
+                          ...p,
+                          repeatTopLabels: e.target.checked,
+                          repeatHeaderOnSplit: e.target.checked,
+                        }))
+                      }
+                      className="rounded bg-slate-900 border-slate-700 text-purple-600 focus:ring-purple-500"
+                    />
+                    <label htmlFor="repeatTopLabels" className="text-xs font-semibold text-purple-200 cursor-pointer">
+                      Повторять верхние метки (Title и Header до первой строки Data)
+                    </label>
+                  </div>
+                  <div className="text-[11px] text-slate-400 pl-5 leading-normal">
+                    {tableDef.repeatTopLabels
+                      ? 'Включено: на каждую разбитую часть таблицы в первых строчках выводятся первые строчки таблицы с типом Title и Header (повторяются, пока не встретят Data).'
+                      : 'Отключено: верхние метки остаются только в 1-м фрагменте; последующие фрагменты сразу содержат строки Data.'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Dynamic Fragments Matrix List */}
+              <div className="space-y-1.5">
+                <div className="text-xs font-semibold text-purple-300 flex items-center justify-between">
+                  <span>Результирующие фрагменты таблицы ({fragments.length}):</span>
+                  <span className="text-[11px] font-mono text-slate-400">
+                    Всего строк: {tableDef.rows.length + (tableDef.title ? 2 : 1)}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {fragments.map((frag, idx) => (
+                    <div
+                      key={idx}
+                      className="p-2.5 bg-slate-950/80 border border-slate-800 rounded-lg font-mono text-xs flex flex-col gap-1"
+                    >
+                      <div className="flex items-center justify-between font-bold text-slate-200">
+                        <span className="text-purple-300">Фрагмент #{idx + 1}</span>
+                        <span className="text-emerald-400">
+                          H: {frag.breakHeight.toFixed(1)} мм
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-400 flex items-center justify-between">
+                        <span>Позиция: ({frag.x.toFixed(1)}, {frag.y.toFixed(1)})</span>
+                        <span className="bg-slate-800/80 px-1.5 py-0.5 rounded text-[10px] text-slate-300">
+                          {frag.rowCount} строк
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 flex items-center justify-between border-t border-slate-900 pt-1">
+                        <span className="text-amber-400/90">
+                          {frag.topLabelsRowCount > 0 ? `Метки: ${frag.topLabelsRowCount} стр. (Title/Header)` : 'Без меток'}
+                        </span>
+                        <span className="text-slate-500">
+                          Данные: {frag.rowCount - frag.topLabelsRowCount} стр.
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           ) : (
             <div className="p-2.5 rounded bg-slate-950/40 text-xs text-slate-500 italic">
-              Table will be generated as a single contiguous CAD entity at (X={tableDef.insertX}, Y={tableDef.insertY}).
+              Таблица будет создана одним сплошным объектом в точке (X={tableDef.insertX}, Y={tableDef.insertY}) общей высотой {( (tableDef.rows.length + 1) * tableDef.rowHeight ).toFixed(1)} мм.
             </div>
           )}
 
           {/* Fragments Summary */}
-          <div className="text-xs text-purple-300 font-mono mt-auto flex items-center gap-1.5">
-            <span className="font-semibold">Fragments generated:</span>
+          <div className="text-xs text-purple-300 font-mono mt-auto flex items-center gap-1.5 pt-1">
+            <span className="font-semibold">Сформировано фрагментов:</span>
             <span className="bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/50">
-              {fragments.length} table fragment(s)
+              {fragments.length} фрагмент(ов)
             </span>
           </div>
         </div>

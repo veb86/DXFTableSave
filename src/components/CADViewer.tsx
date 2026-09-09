@@ -267,11 +267,17 @@ export const CADViewer: React.FC<CADViewerProps> = ({
 
       // Fragment Label Badge Above Table
       const badgeY = sy0 - 8;
-      ctx.fillStyle = isSelected ? '#2563eb' : '#334155';
-      const badgeText = `ACAD_TABLE: ${tbl.handle} (${tbl.rows}x${tbl.cols})`;
-      ctx.font = "10px 'Plus Jakarta Sans', sans-serif";
+      ctx.fillStyle = isSelected ? '#2563eb' : '#1e293b';
+      const fragH = tbl.breakHeight ?? totalH;
+      const fragIdxStr = tbl.fragmentIndex ? `Frag #${tbl.fragmentIndex} ` : '';
+      const repStr = tbl.repeatTopLabels ? ' [Hdr Rep]' : '';
+      const badgeText = `${fragIdxStr}0x${tbl.handle} (${tbl.rows}x${tbl.cols}) H: ${fragH.toFixed(2)}mm${repStr}`;
+      ctx.font = "10px 'JetBrains Mono', monospace";
       const textWidth = ctx.measureText(badgeText).width;
       ctx.fillRect(sx0 - 2, badgeY - 12, textWidth + 8, 16);
+      ctx.strokeStyle = isSelected ? '#93c5fd' : '#475569';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sx0 - 2, badgeY - 12, textWidth + 8, 16);
       ctx.fillStyle = '#ffffff';
       ctx.fillText(badgeText, sx0 + 2, badgeY);
     });

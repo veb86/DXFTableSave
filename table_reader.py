@@ -368,6 +368,26 @@ def parse_acad_table(
         parsed_cells.append(cell_obj)
 
     cell_texts = [c["text"] for c in parsed_cells if c["text"]]
+    break_height = sum(row_heights)
+
+    # Detect top labels: initial consecutive rows with row_style in ('Title', 'Header') until first 'Data'
+    top_label_rows = []
+    top_label_styles = []
+    top_labels_height = 0.0
+    for r in range(num_rows):
+        row_cells = [c for c in parsed_cells if c["row"] == r]
+        row_style = row_cells[0]["row_style"] if row_cells else ("Title" if r == 0 else "Header" if r == 1 else "Data")
+        if row_style in ("Title", "Header"):
+            top_label_rows.append(r)
+            top_label_styles.append(row_style)
+            top_labels_height += row_heights[r] if r < len(row_heights) else 0.0
+        else:
+            # Reached first Data row: top labels end here!
+            break
+
+    repeat_top_labels = bool(break_info.get("repeat_header", False)) or bool(break_flags & 0x10)
+    header_height = top_labels_height if top_label_rows else (row_heights[0] if row_heights else 0.0)
+    data_height = break_height - header_height
 
     return {
         "index": index,
@@ -379,6 +399,14 @@ def parse_acad_table(
         "block_record": block_record,
         "break_flags": break_flags,
         "break_info": break_info,
+        "break_height": break_height,
+        "manual_break_height": round(break_height, 4),
+        "header_height": round(header_height, 4),
+        "data_height": round(data_height, 4),
+        "repeat_top_labels": repeat_top_labels,
+        "top_labels_count": len(top_label_rows),
+        "top_label_styles": top_label_styles,
+        "top_labels_height": round(top_labels_height, 4),
         "num_rows": num_rows,
         "num_cols": num_cols,
         "col_widths": col_widths,
@@ -425,6 +453,11 @@ def print_table_report(table_data: Dict[str, Any], show_all_cells: bool = True) 
     )
     print(f"Table Style:     0x{table_data['style_handle']}")
     print(f"Dimensions:      {table_data['num_rows']} rows x {table_data['num_cols']} columns")
+    print(f"Break Height:    {table_data['break_height']:.4f} mm (Задание высоты вручную: {table_data['manual_break_height']:.4f} mm)")
+    repeat_label_str = "ВКЛЮЧЕНО (Title и Header повторяются на фрагментах)" if table_data["repeat_top_labels"] else "ОТКЛЮЧЕНО"
+    top_styles_str = ", ".join(table_data["top_label_styles"]) if table_data["top_label_styles"] else "Нет"
+    print(f"Повтор верхних меток: {repeat_label_str}")
+    print(f"  └─ Метки до Data:  {table_data['top_labels_count']} строк [{top_styles_str}], высота: {table_data['top_labels_height']:.4f} mm")
     print(f"Column Widths:   {table_data['col_widths']} (DXF Code 142, {len(table_data['col_widths'])} cols)")
     print(f"Row Heights:     {table_data['row_heights']} (DXF Code 141, {len(table_data['row_heights'])} rows)")
     print("-" * 80)

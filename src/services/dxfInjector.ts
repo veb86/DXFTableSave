@@ -416,19 +416,48 @@ export function createStandaloneTableDxf(tableDef: NewTableDefinition): string {
   ].join('\n');
 }
 
-/**
- * Splits a table into multiple fragments if enabled
- */
-export function splitTableIntoFragments(tableDef: NewTableDefinition): {
+export interface GeneratedFragment {
   name: string;
   x: number;
   y: number;
   z: number;
   rows: string[][];
-}[] {
-  const allRows = [tableDef.headers, ...tableDef.rows];
+  breakHeight: number;
+  manualBreakHeight?: number;
+  isManualHeight?: boolean;
+  repeatTopLabels: boolean;
+  topLabelsRowCount: number;
+  topLabelsHeight: number;
+  headerHeight: number;
+  dataHeight: number;
+  startRow: number;
+  rowCount: number;
+}
 
-  if (!tableDef.enableSplitting || tableDef.rowsPerFragment >= allRows.length) {
+/**
+ * Splits a table into multiple fragments with manual height or row-count thresholds
+ * Supports arbitrary positioning, individual break heights per fragment,
+ * and repeating top labels (Title and Header rows until first Data row)
+ */
+export function splitTableIntoFragments(tableDef: NewTableDefinition): GeneratedFragment[] {
+  const rowH = tableDef.rowHeight || 8.0;
+  
+  // Construct top label rows (Title + Header)
+  const topLabelRows: string[][] = [];
+  if (tableDef.title && tableDef.title.trim().length > 0) {
+    topLabelRows.push([tableDef.title, ...Array(Math.max(0, tableDef.headers.length - 1)).fill('')]);
+  }
+  topLabelRows.push(tableDef.headers);
+
+  const topLabelsRowCount = topLabelRows.length;
+  const topLabelsHeight = topLabelsRowCount * rowH;
+  const dataRows = tableDef.rows;
+  const allRows = [...topLabelRows, ...dataRows];
+  const totalSingleHeight = allRows.length * rowH;
+
+  const repeatTopLabels = tableDef.repeatTopLabels !== false && tableDef.repeatHeaderOnSplit !== false;
+
+  if (!tableDef.enableSplitting) {
     return [
       {
         name: 'Fragment 1 (Complete)',
@@ -436,37 +465,113 @@ export function splitTableIntoFragments(tableDef: NewTableDefinition): {
         y: tableDef.insertY,
         z: tableDef.insertZ,
         rows: allRows,
+        breakHeight: totalSingleHeight,
+        manualBreakHeight: tableDef.manualBreakHeight || totalSingleHeight,
+        isManualHeight: false,
+        repeatTopLabels,
+        topLabelsRowCount,
+        topLabelsHeight,
+        headerHeight: topLabelsHeight,
+        dataHeight: dataRows.length * rowH,
+        startRow: 1,
+        rowCount: allRows.length,
       },
     ];
   }
 
-  const fragments: {
-    name: string;
-    x: number;
-    y: number;
-    z: number;
-    rows: string[][];
-  }[] = [];
+  const fragments: GeneratedFragment[] = [];
+  const splitMethod = tableDef.splitMethod || 'rows';
 
-  const bodyRows = tableDef.rows;
-  const chunkCount = Math.ceil(bodyRows.length / tableDef.rowsPerFragment);
+  if (splitMethod === 'manual_height') {
+    // Dynamic height-based splitting: rows wrap once fragment break height threshold is exceeded
+    let rowIdx = 0;
+    let fragIdx = 0;
 
-  for (let i = 0; i < chunkCount; i++) {
-    const chunkStart = i * tableDef.rowsPerFragment;
-    const chunkRows = bodyRows.slice(chunkStart, chunkStart + tableDef.rowsPerFragment);
-    // Fragment includes headers on each broken piece
-    const fragmentRows = [tableDef.headers, ...chunkRows];
+    while (rowIdx < dataRows.length) {
+      const targetHeight =
+        tableDef.fragmentManualHeights?.[fragIdx] ??
+        tableDef.manualBreakHeight ??
+        80.0;
 
-    const fragX = tableDef.insertX + i * tableDef.fragmentOffsetX;
-    const fragY = tableDef.insertY + i * tableDef.fragmentOffsetY;
+      // When repeatTopLabels is true, every fragment includes topLabelRows (Title & Header)
+      const currentFragTopLabels = (fragIdx === 0 || repeatTopLabels) ? topLabelRows : [];
+      const currentTopLabelsH = currentFragTopLabels.length * rowH;
 
-    fragments.push({
-      name: `Fragment ${i + 1} (Rows ${chunkStart + 1}-${chunkStart + chunkRows.length})`,
-      x: fragX,
-      y: fragY,
-      z: tableDef.insertZ,
-      rows: fragmentRows,
-    });
+      // Available height for data rows inside this fragment
+      const availableDataH = Math.max(targetHeight - currentTopLabelsH, rowH);
+      const maxRowsForThisFrag = Math.max(1, Math.floor(availableDataH / rowH));
+
+      const chunkRows = dataRows.slice(rowIdx, rowIdx + maxRowsForThisFrag);
+      const fragmentRows = [...currentFragTopLabels, ...chunkRows];
+      const actualFragHeight = fragmentRows.length * rowH;
+
+      const pos = tableDef.fragmentPositions?.[fragIdx];
+      const fragX = pos ? pos.x : tableDef.insertX + fragIdx * tableDef.fragmentOffsetX;
+      const fragY = pos ? pos.y : tableDef.insertY + fragIdx * tableDef.fragmentOffsetY;
+
+      fragments.push({
+        name: `Fragment ${fragIdx + 1} (Rows ${rowIdx + 1}-${rowIdx + chunkRows.length}, H: ${actualFragHeight.toFixed(1)}mm)`,
+        x: fragX,
+        y: fragY,
+        z: tableDef.insertZ,
+        rows: fragmentRows,
+        breakHeight: actualFragHeight,
+        manualBreakHeight: targetHeight,
+        isManualHeight: true,
+        repeatTopLabels,
+        topLabelsRowCount: currentFragTopLabels.length,
+        topLabelsHeight: currentTopLabelsH,
+        headerHeight: currentTopLabelsH,
+        dataHeight: chunkRows.length * rowH,
+        startRow: rowIdx + 1,
+        rowCount: fragmentRows.length,
+      });
+
+      rowIdx += chunkRows.length;
+      fragIdx++;
+    }
+  } else {
+    // Row count-based splitting
+    const rowsPerFrag = Math.max(1, tableDef.rowsPerFragment || 5);
+    const chunkCount = Math.ceil(dataRows.length / rowsPerFrag);
+
+    for (let i = 0; i < chunkCount; i++) {
+      const chunkStart = i * rowsPerFrag;
+      const chunkRows = dataRows.slice(chunkStart, chunkStart + rowsPerFrag);
+      
+      const currentFragTopLabels = (i === 0 || repeatTopLabels) ? topLabelRows : [];
+      const currentTopLabelsH = currentFragTopLabels.length * rowH;
+      const fragmentRows = [...currentFragTopLabels, ...chunkRows];
+
+      const actualFragHeight = fragmentRows.length * rowH;
+
+      const pos = tableDef.fragmentPositions?.[i];
+      const fragX = pos ? pos.x : tableDef.insertX + i * tableDef.fragmentOffsetX;
+      const fragY = pos ? pos.y : tableDef.insertY + i * tableDef.fragmentOffsetY;
+
+      const targetHeight =
+        tableDef.fragmentManualHeights?.[i] ??
+        tableDef.manualBreakHeight ??
+        actualFragHeight;
+
+      fragments.push({
+        name: `Fragment ${i + 1} (Rows ${chunkStart + 1}-${chunkStart + chunkRows.length})`,
+        x: fragX,
+        y: fragY,
+        z: tableDef.insertZ,
+        rows: fragmentRows,
+        breakHeight: actualFragHeight,
+        manualBreakHeight: targetHeight,
+        isManualHeight: false,
+        repeatTopLabels,
+        topLabelsRowCount: currentFragTopLabels.length,
+        topLabelsHeight: currentTopLabelsH,
+        headerHeight: currentTopLabelsH,
+        dataHeight: chunkRows.length * rowH,
+        startRow: chunkStart + 1,
+        rowCount: fragmentRows.length,
+      });
+    }
   }
 
   return fragments;

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { TableFragment, TableCell } from '../types/dxf';
+import { AutoCADPropertyInspector } from './AutoCADPropertyInspector';
 import {
   Table,
   Download,
@@ -18,6 +19,8 @@ import {
   FileSpreadsheet,
   Sliders,
   Filter,
+  ArrowDown,
+  ArrowRight,
 } from 'lucide-react';
 
 interface TableDetailsProps {
@@ -32,7 +35,7 @@ export const TableDetails: React.FC<TableDetailsProps> = ({
   onSelectTable,
 }) => {
   const [selectedCell, setSelectedCell] = useState<TableCell | null>(null);
-  const [viewMode, setViewMode] = useState<'grid' | 'all-cells'>('grid');
+  const [viewMode, setViewMode] = useState<'properties' | 'grid' | 'all-cells'>('properties');
   const [rowStyleFilter, setRowStyleFilter] = useState<'ALL' | 'Title' | 'Header' | 'Data'>('ALL');
 
   if (!table) {
@@ -167,7 +170,7 @@ export const TableDetails: React.FC<TableDetailsProps> = ({
       )}
 
       {/* Metadata Overview Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
         <div className="bg-slate-900/70 border border-slate-800 p-3 rounded-lg">
           <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
             <Hash className="w-3.5 h-3.5 text-blue-400" />
@@ -194,7 +197,36 @@ export const TableDetails: React.FC<TableDetailsProps> = ({
             <span>Размер таблицы</span>
           </div>
           <div className="font-mono text-sm font-semibold text-slate-100">
-            {table.rows} строк × {table.cols} столбцов
+            {table.totalTableRows || table.rows} × {table.cols}
+          </div>
+          <div className="text-[10px] text-slate-500 font-mono">
+            фрагм: {table.rows} стр.
+          </div>
+        </div>
+
+        <div className="bg-slate-900/70 border border-slate-800 p-3 rounded-lg">
+          <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
+            <ArrowDown className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Направление</span>
+          </div>
+          <div className="font-mono text-sm font-semibold text-indigo-300">
+            {table.flowDirection || 'Вниз'}
+          </div>
+          <div className="text-[10px] text-slate-500">
+            Flow Direction
+          </div>
+        </div>
+
+        <div className="bg-slate-900/70 border border-slate-800 p-3 rounded-lg">
+          <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
+            <ArrowRight className="w-3.5 h-3.5 text-purple-400" />
+            <span>Разрыв: напр.</span>
+          </div>
+          <div className="font-mono text-sm font-semibold text-purple-300">
+            {table.breakDirection || 'Вправо'}
+          </div>
+          <div className="text-[10px] text-slate-500 font-mono">
+            {table.breakSpacing ? `Интервал: ${table.breakSpacing.toFixed(2)}` : 'Интервал: 0.99'}
           </div>
         </div>
 
@@ -207,6 +239,213 @@ export const TableDetails: React.FC<TableDetailsProps> = ({
             {table.layer || '0'}
           </div>
         </div>
+      </div>
+
+      {/* Fragment Break Height, Manual Height, and Position Engine */}
+      <div className="bg-slate-900/90 border border-indigo-900/50 rounded-xl p-4 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-3 mb-3 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <Sliders className="w-4 h-4 text-indigo-400" />
+            <span className="font-bold text-sm text-indigo-200">
+              Высота разбиения и геометрия фрагмента
+            </span>
+            <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-indigo-950/80 text-indigo-300 border border-indigo-800/60">
+              {table.fragmentIndex ? `Фрагмент ${table.fragmentIndex} из ${table.totalFragments}` : 'Одиночная таблица'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-slate-400 text-[11px]">Режим позиции:</span>
+            <span className={`px-2 py-0.5 rounded text-[11px] font-semibold border ${
+              table.positionMode === 'manual'
+                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                : 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+            }`}>
+              {table.positionMode === 'manual' ? 'Произвольная позиция (Manual)' : 'Автоматическое смещение'}
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {/* Current Break Height */}
+          <div className="bg-slate-950/70 border border-slate-800 p-3 rounded-lg flex flex-col justify-between">
+            <div className="flex items-center justify-between text-slate-400 text-[11px] mb-1">
+              <span>Высота разбиения (Break Height)</span>
+              <Split className="w-3.5 h-3.5 text-purple-400" />
+            </div>
+            <div className="text-lg font-bold font-mono text-purple-300">
+              {table.breakHeight.toFixed(3)} <span className="text-xs font-normal text-slate-400">мм</span>
+            </div>
+            <div className="text-[10px] text-slate-500 mt-1">
+              Высота, после которой строчки переносятся в следующий фрагмент
+            </div>
+          </div>
+
+          {/* Manual Break Height Parameter (Задание высоты вручную) */}
+          <div className="bg-slate-950/70 border border-slate-800 p-3 rounded-lg flex flex-col justify-between">
+            <div className="flex items-center justify-between text-slate-400 text-[11px] mb-1">
+              <span className="font-semibold text-emerald-300">Задание высоты вручную</span>
+              <Sliders className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <input
+                type="number"
+                step="0.1"
+                min="1"
+                value={table.manualBreakHeight ?? parseFloat(table.breakHeight.toFixed(3))}
+                onChange={(e) => {
+                  const val = parseFloat(e.target.value) || 0;
+                  table.manualBreakHeight = val;
+                  table.isManualBreakHeight = true;
+                  // Trigger local re-render by toggling selectedCell if needed
+                  setSelectedCell((prev) => (prev ? { ...prev } : null));
+                }}
+                className="w-24 px-2 py-1 bg-slate-900 border border-emerald-700/60 rounded text-sm font-mono text-emerald-200 font-bold focus:outline-none focus:border-emerald-400"
+              />
+              <span className="text-xs text-slate-400 font-mono">мм</span>
+              {table.isManualBreakHeight && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-700/50">
+                  Задано
+                </span>
+              )}
+            </div>
+            <div className="text-[10px] text-slate-500 mt-1">
+              Параметр ручного лимита высоты фрагмента в структуре таблицы
+            </div>
+          </div>
+
+          {/* Fragment Position Coordinates */}
+          <div className="bg-slate-950/70 border border-slate-800 p-3 rounded-lg flex flex-col justify-between">
+            <div className="flex items-center justify-between text-slate-400 text-[11px] mb-1">
+              <span>Координаты (X, Y, Z)</span>
+              <Move className="w-3.5 h-3.5 text-cyan-400" />
+            </div>
+            <div className="text-xs font-mono font-semibold text-cyan-300 space-y-0.5">
+              <div>X: <span className="text-slate-100">{table.x.toFixed(3)}</span></div>
+              <div>Y: <span className="text-slate-100">{table.y.toFixed(3)}</span></div>
+            </div>
+            {table.deltaFromPrevious && (
+              <div className="text-[10px] font-mono text-cyan-400/80 mt-1 border-t border-slate-800/80 pt-1">
+                Δ от пред.: dX={table.deltaFromPrevious.dx.toFixed(2)}, dY={table.deltaFromPrevious.dy.toFixed(2)}
+              </div>
+            )}
+          </div>
+
+          {/* Header vs Data Heights breakdown */}
+          <div className="bg-slate-950/70 border border-slate-800 p-3 rounded-lg flex flex-col justify-between">
+            <div className="text-slate-400 text-[11px] mb-1">Составляющие высоты</div>
+            <div className="text-xs font-mono space-y-1">
+              <div className="flex justify-between">
+                <span className="text-amber-400">Шапка / Метки:</span>
+                <span className="text-slate-200">{table.headerHeight ? table.headerHeight.toFixed(3) : '—'} мм</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-blue-400">Данные:</span>
+                <span className="text-slate-200">{table.dataHeight ? table.dataHeight.toFixed(3) : '—'} мм</span>
+              </div>
+              <div className="flex justify-between border-t border-slate-800 pt-0.5 text-[11px]">
+                <span className="text-slate-400">Строк:</span>
+                <span className="text-slate-300">{table.rows} шт</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Repeat Top Labels (Повторение верхних меток) Parameter Card */}
+        <div className="mt-3 p-3 rounded-lg bg-slate-950/70 border border-indigo-900/40">
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+            <div className="flex items-center gap-2">
+              <Layers className="w-4 h-4 text-indigo-400" />
+              <span className="text-xs font-bold text-indigo-200">
+                Параметр повторения верхних меток (Repeat Top Labels)
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  table.repeatTopLabels = !table.repeatTopLabels;
+                  setSelectedCell((prev) => (prev ? { ...prev } : null));
+                }}
+                className={`text-[11px] px-2.5 py-0.5 rounded font-mono font-semibold transition-colors cursor-pointer border ${
+                  table.repeatTopLabels
+                    ? 'bg-indigo-600/30 text-indigo-200 border-indigo-500/50 hover:bg-indigo-600/50'
+                    : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700'
+                }`}
+              >
+                {table.repeatTopLabels ? '✓ Повторение включено' : '✕ Повторение отключено'}
+              </button>
+            </div>
+            <div className="text-[11px] font-mono text-indigo-300">
+              Метки: <span className="font-bold text-slate-100">{table.topLabelsRowCount || 0}</span> строк
+              {table.topLabelsHeight ? ` (${table.topLabelsHeight.toFixed(2)} мм)` : ''}
+            </div>
+          </div>
+          <div className="text-[11px] text-slate-400 leading-relaxed">
+            {table.repeatTopLabels ? (
+              <span>
+                <span className="text-emerald-400 font-medium">Активно:</span> На каждую разбитую часть таблицы в первых строчках выводятся первые строчки таблицы с типом{' '}
+                <span className="text-amber-300 font-semibold">Title</span> и{' '}
+                <span className="text-sky-300 font-semibold">Header</span>. Они повторяются до тех пор, пока не встретят{' '}
+                <span className="text-emerald-300 font-semibold">Data</span>.
+              </span>
+            ) : (
+              <span>
+                <span className="text-slate-500">Отключено:</span> Верхние метки выводятся только в первом фрагменте. Во все последующие разбитые фрагменты сразу выводятся строки Data без дублирования шапки.
+              </span>
+            )}
+          </div>
+          {table.topLabelRowStyles && table.topLabelRowStyles.length > 0 && (
+            <div className="mt-2 flex items-center gap-1.5 flex-wrap text-[10px] font-mono">
+              <span className="text-slate-500">Повторяемые строки верхних меток:</span>
+              {table.topLabelRowStyles.map((st, idx) => (
+                <span
+                  key={idx}
+                  className={`px-1.5 py-0.5 rounded border ${
+                    st === 'Title'
+                      ? 'bg-amber-950/40 text-amber-300 border-amber-800/60 font-semibold'
+                      : 'bg-sky-950/40 text-sky-300 border-sky-800/60'
+                  }`}
+                >
+                  R{idx}: {st}
+                </span>
+              ))}
+              <span className="text-slate-500">→ затем Data</span>
+            </div>
+          )}
+        </div>
+
+        {/* Multi-Fragment Breakdown List */}
+        {allTables.length > 1 && (
+          <div className="mt-3 pt-3 border-t border-slate-800/80">
+            <div className="text-[11px] font-semibold text-slate-300 mb-2">
+              Сводная сетка высот и позиций всех фрагментов таблицы:
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-[11px]">
+              {allTables.map((t, i) => (
+                <div
+                  key={t.id}
+                  onClick={() => onSelectTable(t)}
+                  className={`p-2.5 rounded-lg border cursor-pointer transition-all ${
+                    t.id === table.id
+                      ? 'bg-indigo-950/40 border-indigo-500 text-indigo-100 shadow-sm'
+                      : 'bg-slate-950/50 border-slate-800/80 hover:border-slate-700 text-slate-400'
+                  }`}
+                >
+                  <div className="flex items-center justify-between font-bold mb-1">
+                    <span>Фрагмент #{i + 1} ({t.handle})</span>
+                    <span className="text-purple-300">H: {t.breakHeight.toFixed(2)}мм</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400">
+                    Поз: ({t.x.toFixed(1)}, {t.y.toFixed(1)}) | Строк: {t.rows}
+                  </div>
+                  {t.manualBreakHeight !== undefined && (
+                    <div className="text-[10px] text-emerald-400/90 mt-0.5">
+                      Ручная высота: {t.manualBreakHeight.toFixed(2)}мм
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* AutoCAD Table Break Flags (DXF Group Code 90) Analysis */}
@@ -495,10 +734,21 @@ export const TableDetails: React.FC<TableDetailsProps> = ({
           <div className="flex items-center gap-2">
             <div className="flex rounded-md bg-slate-950 p-0.5 border border-slate-800 text-xs">
               <button
+                onClick={() => setViewMode('properties')}
+                className={`px-3 py-1 rounded transition-colors flex items-center gap-1.5 ${
+                  viewMode === 'properties'
+                    ? 'bg-cyan-600 text-white font-semibold shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Sliders className="w-3.5 h-3.5 text-cyan-300" />
+                Свойства AutoCAD (Палитра)
+              </button>
+              <button
                 onClick={() => setViewMode('grid')}
                 className={`px-3 py-1 rounded transition-colors flex items-center gap-1.5 ${
                   viewMode === 'grid'
-                    ? 'bg-blue-600 text-white font-semibold'
+                    ? 'bg-blue-600 text-white font-semibold shadow-sm'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
@@ -509,7 +759,7 @@ export const TableDetails: React.FC<TableDetailsProps> = ({
                 onClick={() => setViewMode('all-cells')}
                 className={`px-3 py-1 rounded transition-colors flex items-center gap-1.5 ${
                   viewMode === 'all-cells'
-                    ? 'bg-blue-600 text-white font-semibold'
+                    ? 'bg-blue-600 text-white font-semibold shadow-sm'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
@@ -546,6 +796,16 @@ export const TableDetails: React.FC<TableDetailsProps> = ({
             </button>
           </div>
         </div>
+
+        {/* View Mode: AutoCAD Property Palette */}
+        {viewMode === 'properties' && (
+          <div className="p-4 bg-slate-950/40">
+            <div className="mb-3 text-xs text-slate-400">
+              Полный перечень свойств таблицы в соответствии со спецификацией AutoCAD / nanoCAD (Стиль, Строк, Столбцов, Направление, Размеры, Геометрия, Разрыв таблиц):
+            </div>
+            <AutoCADPropertyInspector table={table} />
+          </div>
+        )}
 
         {/* View Mode 1: Interactive Table Grid */}
         {viewMode === 'grid' && (

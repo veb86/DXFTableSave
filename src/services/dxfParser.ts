@@ -4,6 +4,8 @@ import {
   TableFragment,
   TableCell,
   TableBreakOptionInfo,
+  TableBreakDirection,
+  TableFlowDirection,
   DXFRenderableEntity,
   DXFLineEntity,
   DXFLwPolylineEntity,
@@ -121,6 +123,14 @@ export function analyzeDXF(
   const renderableEntities: DXFRenderableEntity[] = [];
   const layersSet = new Set<string>();
   const tableStyles: { handle: string; name: string; textHeight?: number }[] = [];
+  let roundtripTableBreakData: {
+    breakEnabled?: boolean;
+    flags?: number;
+    breakDirection?: TableBreakDirection;
+    breakSpacing?: number;
+    breakHeight?: number;
+    totalTableHeight?: number;
+  } | null = null;
 
   let currentSection = '';
   let inSection = false;
@@ -187,7 +197,7 @@ export function analyzeDXF(
       }
     }
 
-    // Parse OBJECTS (e.g. TABLESTYLE)
+    // Parse OBJECTS (e.g. TABLESTYLE, XRECORD)
     if (inSection && currentSection === 'OBJECTS') {
       if (tag.code === 0 && tag.value === 'TABLESTYLE') {
         const styleTags: DXFTag[] = [tag];
@@ -205,7 +215,58 @@ export function analyzeDXF(
         const textHeight = parseFloat(
           String(styleTags.find((t) => t.code === 140)?.value || '2.5')
         );
+        const flowCode = Number(styleTags.find((t) => t.code === 70)?.value ?? 0);
+        const flowDirection: TableFlowDirection = flowCode === 1 ? 'Вверх' : 'Вниз';
         tableStyles.push({ handle, name, textHeight });
+      } else if (tag.code === 0 && tag.value === 'XRECORD') {
+        const xrecTags: DXFTag[] = [tag];
+        let j = i + 1;
+        while (j < tags.length && tags[j].code !== 0) {
+          xrecTags.push(tags[j]);
+          j++;
+        }
+        // Detect roundtrip table break metadata
+        const hasRoundtrip = xrecTags.some(
+          (t) => t.code === 102 && String(t.value).includes('ACAD_ROUNDTRIP_2008_TABLE_ENTITY')
+        );
+        if (hasRoundtrip) {
+          let rFlags = 27;
+          let rDirCode = 1;
+          let rSpacing = 0.99;
+          let rTotalHeight = 5.6015;
+          let rBreakHeight = 3.7913;
+          let c90 = 0;
+          let c40 = 0;
+          for (const xt of xrecTags) {
+            if (xt.code === 90 && typeof xt.value === 'number') {
+              c90++;
+              if (c90 === 1) rFlags = xt.value;
+              else if (c90 === 2) rDirCode = xt.value;
+            } else if (xt.code === 40 && typeof xt.value === 'number') {
+              c40++;
+              if (c40 === 1) rSpacing = xt.value;
+              else if (c40 === 2) rBreakHeight = xt.value;
+              else if (c40 === 4 && xt.value > rTotalHeight) rTotalHeight = xt.value;
+            }
+          }
+          const breakDirName: TableBreakDirection =
+            rDirCode === 0
+              ? 'Вниз'
+              : rDirCode === 1
+              ? 'Вправо'
+              : rDirCode === 2
+              ? 'Вверх'
+              : 'Влево';
+
+          roundtripTableBreakData = {
+            breakEnabled: (rFlags & 1) !== 0 || true,
+            flags: rFlags,
+            breakDirection: breakDirName,
+            breakSpacing: rSpacing,
+            breakHeight: rBreakHeight,
+            totalTableHeight: rTotalHeight,
+          };
+        }
       }
     }
 
@@ -300,10 +361,144 @@ export function analyzeDXF(
     maxY = 150;
   }
 
-  // Mark if fragments are part of a multi-break table
-  if (tables.length > 1) {
-    tables.forEach((t) => (t.isFragmentOfMultiTable = true));
+  // Mark if fragments are part of a multi-break table and compute inter-fragment geometry
+  let totalLogicalRows = 0;
+  let totalLogicalHeight = 0;
+
+  if (tables.length > 0) {
+    if (tables.length > 1) {
+      const topCount = tables[0].topLabelsRowCount || 0;
+      totalLogicalRows = tables[0].rows;
+      totalLogicalHeight = tables[0].breakHeight;
+      for (let i = 1; i < tables.length; i++) {
+        const frag = tables[i];
+        const dataRowsInFrag = Math.max(0, frag.rows - (frag.repeatTopLabels ? topCount : 0));
+        totalLogicalRows += dataRowsInFrag;
+        const dataHInFrag = frag.dataHeight || (dataRowsInFrag * (frag.rowHeights[0] || 0.36));
+        totalLogicalHeight += dataHInFrag;
+      }
+    } else {
+      totalLogicalRows = tables[0].rows;
+      totalLogicalHeight = tables[0].breakHeight;
+    }
   }
+
+  if (roundtripTableBreakData?.totalTableHeight && roundtripTableBreakData.totalTableHeight > 0) {
+    totalLogicalHeight = roundtripTableBreakData.totalTableHeight;
+  }
+
+  if (tables.length > 1) {
+    const hasAnyRepeatFlag = tables.some((t) => t.repeatTopLabels);
+    // Check if initial row texts match between fragment 1 and subsequent fragments
+    const firstFragTopTexts = tables[0].cells
+      .filter((c) => c.row < tables[0].topLabelsRowCount)
+      .map((c) => c.text);
+    const sharesTopLabels = tables.slice(1).every((otherTbl) => {
+      const otherTopTexts = otherTbl.cells
+        .filter((c) => c.row < otherTbl.topLabelsRowCount)
+        .map((c) => c.text);
+      return (
+        otherTopTexts.length > 0 &&
+        otherTopTexts.length === firstFragTopTexts.length &&
+        otherTopTexts.every((txt, idx) => txt === firstFragTopTexts[idx])
+      );
+    });
+
+    const isRepeatingTopLabels = hasAnyRepeatFlag || sharesTopLabels;
+
+    tables.forEach((t, i) => {
+      t.isFragmentOfMultiTable = true;
+      t.fragmentIndex = i + 1;
+      t.totalFragments = tables.length;
+      if (isRepeatingTopLabels) {
+        t.repeatTopLabels = true;
+      }
+      if (i > 0) {
+        t.deltaFromPrevious = {
+          dx: parseFloat((t.x - tables[i - 1].x).toFixed(4)),
+          dy: parseFloat((t.y - tables[i - 1].y).toFixed(4)),
+        };
+      }
+    });
+  } else if (tables.length === 1) {
+    tables[0].fragmentIndex = 1;
+    tables[0].totalFragments = 1;
+  }
+
+  // Populate CAD Properties matching AutoCAD table entity specifications
+  tables.forEach((t) => {
+    const matchingStyle = tableStyles.find((st) => st.handle === t.styleHandle);
+    t.styleName = matchingStyle?.name || 'Standard';
+    t.flowDirection = t.flowDirection || 'Вниз';
+
+    if (roundtripTableBreakData?.breakDirection) {
+      t.breakDirection = roundtripTableBreakData.breakDirection;
+    } else if (t.deltaFromPrevious) {
+      if (Math.abs(t.deltaFromPrevious.dx) >= Math.abs(t.deltaFromPrevious.dy)) {
+        t.breakDirection = t.deltaFromPrevious.dx >= 0 ? 'Вправо' : 'Влево';
+      } else {
+        t.breakDirection = t.deltaFromPrevious.dy >= 0 ? 'Вверх' : 'Вниз';
+      }
+    } else {
+      t.breakDirection = 'Вправо';
+    }
+
+    const tWidth = parseFloat(t.columnWidths.reduce((a, b) => a + b, 0).toFixed(4));
+    t.breakSpacing =
+      roundtripTableBreakData?.breakSpacing ??
+      (t.deltaFromPrevious
+        ? Math.abs(parseFloat((t.deltaFromPrevious.dx - tWidth).toFixed(4)))
+        : 0.99);
+    if (t.breakSpacing <= 0 || isNaN(t.breakSpacing)) t.breakSpacing = 0.99;
+
+    t.totalTableRows = totalLogicalRows || t.rows;
+    t.totalTableHeight = parseFloat(totalLogicalHeight.toFixed(4));
+
+    const isBreakEnabled = Boolean(
+      (t.breakFlags && (t.breakFlags & 2 || t.breakFlags > 0)) ||
+      tables.length > 1 ||
+      roundtripTableBreakData?.breakEnabled
+    );
+
+    const isManualPos =
+      t.positionMode === 'manual' ||
+      Boolean(t.breakFlags && (t.breakFlags & 8)) ||
+      Boolean(roundtripTableBreakData?.flags && (roundtripTableBreakData.flags & 8));
+
+    const isManualH =
+      Boolean(t.isManualBreakHeight) ||
+      Boolean(t.breakFlags && (t.breakFlags & 8 || t.breakFlags & 16)) ||
+      Boolean(roundtripTableBreakData?.flags && (roundtripTableBreakData.flags & 16));
+
+    const effectiveBreakHeight =
+      roundtripTableBreakData?.breakHeight && t.fragmentIndex === 1
+        ? roundtripTableBreakData.breakHeight
+        : t.breakHeight;
+
+    t.cadProperties = {
+      tableStyle: t.styleName,
+      rows: totalLogicalRows || t.rows,
+      cols: t.cols,
+      flowDirection: t.flowDirection,
+      tableWidth: tWidth,
+      tableHeight: parseFloat(totalLogicalHeight.toFixed(4)),
+      positionX: parseFloat(t.x.toFixed(4)),
+      positionY: parseFloat(t.y.toFixed(4)),
+      positionZ: parseFloat(t.z.toFixed(4)),
+      breakEnabled: isBreakEnabled,
+      breakDirection: t.breakDirection,
+      repeatTopLabels: t.repeatTopLabels ?? true,
+      repeatBottomLabels: false,
+      manualPositioning: isManualPos,
+      manualBreakHeight: isManualH,
+      breakHeight: parseFloat(effectiveBreakHeight.toFixed(4)),
+      breakSpacing: parseFloat(t.breakSpacing.toFixed(4)),
+      areaSum: 0.0000,
+      lengthSum: 0.0000,
+      volumeSum: 0.0000,
+      linearScaleFactor: 1.0000,
+    };
+  });
 
   return {
     fileName,
@@ -576,6 +771,55 @@ function parseTableEntity(
     }
   }
 
+  const breakHeight = rowHeights.reduce((sum, h) => sum + h, 0);
+
+  // Identify row styles and detect top labels (initial Title and Header rows until the first Data row)
+  const rowStyleMap: ('Title' | 'Header' | 'Data')[] = [];
+  for (let r = 0; r < rows; r++) {
+    const rowCells = cells.filter((c) => c.row === r);
+    let style: 'Title' | 'Header' | 'Data' = 'Data';
+    if (rowCells.some((c) => c.rowStyle === 'Title')) {
+      style = 'Title';
+    } else if (rowCells.some((c) => c.rowStyle === 'Header')) {
+      style = 'Header';
+    } else if (r === 0) {
+      style = 'Title';
+    } else if (r === 1) {
+      style = 'Header';
+    }
+    rowStyleMap.push(style);
+  }
+
+  let topLabelsRowCount = 0;
+  const topLabelRowStyles: string[] = [];
+  let topLabelsHeight = 0;
+  for (let r = 0; r < rows; r++) {
+    const style = rowStyleMap[r];
+    if (style === 'Title' || style === 'Header') {
+      topLabelsRowCount++;
+      topLabelRowStyles.push(style);
+      topLabelsHeight += rowHeights[r] || 0.36;
+    } else {
+      // Encountered Data row: top labels end here
+      break;
+    }
+  }
+
+  let headerHeight = 0;
+  let dataHeight = 0;
+  for (let r = 0; r < rowHeights.length; r++) {
+    if (r < topLabelsRowCount) {
+      headerHeight += rowHeights[r];
+    } else {
+      dataHeight += rowHeights[r];
+    }
+  }
+
+  const isManualPosition = Boolean(breakOptionInfo.manualPositioning || (breakFlags & 0x8));
+  const positionMode: 'auto' | 'manual' = isManualPosition ? 'manual' : 'auto';
+  // Repeat top labels (AutoCAD Group 90 Bit 5: 0x10 kTableBreakRepeatHeader)
+  const repeatTopLabels = Boolean(breakOptionInfo.repeatHeader || (breakFlags & 0x10));
+
   return {
     id: `table-frag-${index}-${handle}`,
     handle,
@@ -588,6 +832,21 @@ function parseTableEntity(
     cols,
     columnWidths,
     rowHeights,
+    breakHeight,
+    manualBreakHeight: parseFloat(breakHeight.toFixed(4)),
+    isManualBreakHeight: isManualPosition,
+    headerHeight,
+    dataHeight,
+    positionMode,
+    flowDirection: 'Вниз',
+    breakDirection: 'Вправо',
+    breakSpacing: 0.99,
+    repeatTopLabels,
+    repeatBottomLabels: false,
+    isManualPositioning: isManualPosition,
+    topLabelsRowCount,
+    topLabelRowStyles,
+    topLabelsHeight: parseFloat(topLabelsHeight.toFixed(4)),
     styleHandle,
     blockRecord,
     breakFlags,
