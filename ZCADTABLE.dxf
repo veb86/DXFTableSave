@@ -545,7 +545,7 @@ $SPLINESEGS
   9
 $HANDSEED
   5
-2CB
+2CC
   9
 $SURFTAB1
  70
@@ -2069,7 +2069,7 @@ AcDbBlockTableRecord
 102
 {BLKREFS
 331
-EB
+2B1
 102
 }
  70
@@ -2095,7 +2095,7 @@ AcDbBlockTableRecord
 102
 {BLKREFS
 331
-A7A
+2B2
 102
 }
  70
@@ -2121,7 +2121,7 @@ AcDbBlockTableRecord
 102
 {BLKREFS
 331
-AEE
+2B3
 102
 }
  70
@@ -8665,7 +8665,7 @@ AcDbBlockReference
 100
 AcDbTable
 342
-2B6
+2B7
 343
 201
  11
@@ -10695,7 +10695,7 @@ AcDbBlockReference
 100
 AcDbTable
 342
-2B6
+2B7
 343
 202
  11
@@ -11943,7 +11943,7 @@ AcDbBlockReference
 100
 AcDbTable
 342
-2B6
+2B7
 343
 203
  11
@@ -12960,6 +12960,10 @@ ACAD_VISUALSTYLE
 AcDbVariableDictionary
 350
 4A
+  3
+ACDB_RECOMPOSE_DATA
+350
+2B5
   0
 DICTIONARY
   5
@@ -13127,7 +13131,7 @@ AcDbDictionary
   3
 Standard
 350
-3F
+2B7
   0
 DICTIONARY
   5
@@ -13734,202 +13738,6 @@ F
 }
 330
 47
-  0
-TABLESTYLE
-  5
-3F
-102
-{ACAD_XDICTIONARY
-360
-162
-102
-}
-102
-{ACAD_REACTORS
-330
-48
-102
-}
-330
-48
-100
-AcDbTableStyle
-  3
-Standard
- 70
-0
- 71
-0
- 40
-1.5
- 41
-1.5
-280
-0
-281
-0
-  7
-Standard
-140
-4.5
-170
-2
- 62
-0
- 63
-7
-283
-0
- 90
-512
- 91
-0
-  1
-
-274
--2
-284
-1
- 64
-0
-275
--2
-285
-1
- 65
-0
-276
--2
-286
-1
- 66
-0
-277
--2
-287
-1
- 67
-0
-278
--2
-288
-1
- 68
-0
-279
--2
-289
-1
- 69
-0
-  7
-Standard
-140
-6.0
-170
-5
- 62
-0
- 63
-7
-283
-0
- 90
-512
- 91
-0
-  1
-
-274
--2
-284
-1
- 64
-0
-275
--2
-285
-1
- 65
-0
-276
--2
-286
-1
- 66
-0
-277
--2
-287
-1
- 67
-0
-278
--2
-288
-1
- 68
-0
-279
--2
-289
-1
- 69
-0
-  7
-Standard
-140
-4.5
-170
-5
- 62
-0
- 63
-7
-283
-0
- 90
-512
- 91
-0
-  1
-
-274
--2
-284
-1
- 64
-0
-275
--2
-285
-1
- 65
-0
-276
--2
-286
-1
- 66
-0
-277
--2
-287
-1
- 67
-0
-278
--2
-288
-1
- 68
-0
-279
--2
-289
-1
- 69
-0
   0
 VISUALSTYLE
   5
@@ -15347,11 +15155,37 @@ AcDbDictionary
   3
 ACAD_XREC_ROUNDTRIP
 360
-2B5
+2B6
   0
 XRECORD
   5
 2B5
+102
+{ACAD_REACTORS
+330
+40
+102
+}
+330
+40
+100
+AcDbXrecord
+280
+1
+ 90
+1
+330
+2B7
+330
+2B7
+330
+2B7
+330
+2B1
+  0
+XRECORD
+  5
+2B6
 102
 {ACAD_REACTORS
 330
@@ -15367,7 +15201,7 @@ AcDbXrecord
 102
 ACAD_ROUNDTRIP_2008_TABLE_ENTITY
 360
-2B7
+2B8
  70
 1
  90
@@ -15461,15 +15295,15 @@ ACAD_ROUNDTRIP_2008_TABLE_ENTITY
 330
 2B3
 361
-2B8
+2B9
   0
 TABLESTYLE
   5
-2B6
+2B7
 102
 {ACAD_XDICTIONARY
 360
-2B9
+2BA
 102
 }
 102
@@ -15667,9 +15501,9 @@ Standard
   0
 TABLECONTENT
   5
-2B7
+2B8
 330
-2B5
+2B6
 100
 AcDbLinkedData
   1
@@ -36627,13 +36461,13 @@ TABLEFORMAT_END
 100
 AcDbTableContent
 340
-2B6
+2B7
   0
 TABLEGEOMETRY
   5
-2B8
+2B9
 330
-2B5
+2B6
 100
 AcDbTableGeometry
  90
@@ -38957,9 +38791,9 @@ AcDbTableGeometry
   0
 DICTIONARY
   5
-2B9
+2BA
 330
-2B6
+2B7
 100
 AcDbDictionary
 280
@@ -38969,19 +38803,19 @@ AcDbDictionary
   3
 ACAD_ROUNDTRIP_2008_TABLESTYLE_CELLSTYLEMAP
 360
-2BA
+2BB
   0
 CELLSTYLEMAP
   5
-2BA
+2BB
 102
 {ACAD_REACTORS
 330
-2B9
+2BA
 102
 }
 330
-2B9
+2BA
 100
 AcDbCellStyleMap
  90

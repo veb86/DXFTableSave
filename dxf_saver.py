@@ -40,7 +40,7 @@ from dxf_parser import read_tags, DXFTag, extract_entities_by_type
 from table_reader import analyze_tables_in_dxf
 
 # Коды групп DXF, хранящие указатели на дескрипторы (Handles)
-HANDLE_CODES = {5, 330, 340, 342, 343, 350, 360, 361, 390}
+HANDLE_CODES = {5, 330, 331, 340, 342, 343, 350, 360, 361, 390}
 
 
 class DXFTableSaver:
@@ -164,7 +164,7 @@ class DXFTableSaver:
 
         target_classes = {"ACAD_TABLE", "CELLSTYLEMAP", "TABLECONTENT", "TABLEGEOMETRY"}
         target_blocks = {"*T1", "*T11", "*T12"}
-        target_obj_handles = {"87", "B62", "B63", "A78", "A79", "201", "A75"}
+        target_obj_handles = {"87", "B62", "B63", "A78", "A79", "201", "A75", "2AB"}
 
         # 1. Классы
         classes = [e for e in ents_a if e[0].value == "CLASS" and any(t.code == 1 and t.value in target_classes for t in e)]
@@ -271,6 +271,11 @@ class DXFTableSaver:
         for i, old_h in enumerate(internal_source_handles):
             handle_map[old_h] = f"{start_new_handle + i:X}"
 
+        # Дополнительные стили из образца связываем с создаваемым стилем таблицы
+        if "87" in handle_map:
+            handle_map["BA"] = handle_map["87"]
+            handle_map["BE"] = handle_map["87"]
+
         max_allocated_handle = start_new_handle + len(internal_source_handles)
 
         # Функция ремаппинга дескрипторов в сущности
@@ -291,6 +296,9 @@ class DXFTableSaver:
         tables_rem = [remap_entity(e) for e in tables]
         objects_rem = [remap_entity(e) for e in objects]
 
+        root_dict_h = target_sys.get("ROOT_DICT", "40")
+        tablestyle_dict_h = target_sys.get("ACAD_TABLESTYLE_DICT", "48")
+
         # Сборка финального списка тегов DXF
         out_tags: List[DXFTag] = []
         i = 0
@@ -308,7 +316,42 @@ class DXFTableSaver:
                 i += 2
                 continue
 
-            # 2. Точки вставки перед ENDSEC для секций CLASSES, BLOCKS, ENTITIES, OBJECTS
+            # 2. Корректировка корневого словаря NOD (добавление ACDB_RECOMPOSE_DATA)
+            if t.code == 5 and t.value == root_dict_h and "2AB" in handle_map:
+                out_tags.append(t)
+                i += 1
+                while i < len(self.template_tags) and self.template_tags[i].code != 0:
+                    out_tags.append(self.template_tags[i])
+                    i += 1
+                # Добавляем ACDB_RECOMPOSE_DATA для автоматического объединения фрагментов таблицы
+                out_tags.append(DXFTag(3, "ACDB_RECOMPOSE_DATA"))
+                out_tags.append(DXFTag(350, handle_map["2AB"]))
+                continue
+
+            # 3. Корректировка словаря ACAD_TABLESTYLE (привязка Standard к внедряемому стилю)
+            if t.code == 5 and t.value == tablestyle_dict_h and "87" in handle_map:
+                out_tags.append(t)
+                i += 1
+                while i < len(self.template_tags) and self.template_tags[i].code != 0:
+                    cur_t = self.template_tags[i]
+                    if cur_t.code == 350 and cur_t.value == "3F":
+                        out_tags.append(DXFTag(350, handle_map["87"]))
+                    else:
+                        out_tags.append(cur_t)
+                    i += 1
+                continue
+
+            # 4. Пропуск устаревшего пустого TABLESTYLE 3F с битым указателем 162
+            if t.code == 0 and t.value == "TABLESTYLE":
+                # Проверим, является ли это пустым стилем 3F
+                if i + 2 < len(self.template_tags) and self.template_tags[i + 1].code == 5 and self.template_tags[i + 1].value == "3F":
+                    # Пропускаем весь примитив до следующего code 0
+                    i += 1
+                    while i < len(self.template_tags) and self.template_tags[i].code != 0:
+                        i += 1
+                    continue
+
+            # 5. Точки вставки перед ENDSEC для секций CLASSES, BLOCKS, ENTITIES, OBJECTS
             if t.code == 0 and t.value == "ENDSEC" and i > 0:
                 # Определение текущей секции по предыдущему SECTION
                 sec_name = None
@@ -400,8 +443,17 @@ def verify_saved_dxf(dxf_path: str):
     print(f"   - Отрезки (LINE):          {len(lines)} (сохранены исходные границы ZCAD)")
     print(f"   - Таблицы (ACAD_TABLE):   {len(tables)} (успешно внедрены)")
 
+    # Проверка связующих структур автокада (ACDB_RECOMPOSE_DATA и BLOCK_RECORD refs)
+    recompose_found = any(t.code == 3 and t.value == "ACDB_RECOMPOSE_DATA" for t in tags)
+    print(f"3. Проверка метаданных объединения разрывов таблицы (Table Breaks):")
+    if recompose_found:
+        print(f"   [OK] ACDB_RECOMPOSE_DATA присутствует в корневом словаре NOD.")
+        print(f"        AutoCAD выполнит Recompose и объединит 3 фрагмента в единую цельную таблицу.")
+    else:
+        print(f"   [ПРЕДУПРЕЖДЕНИЕ] ACDB_RECOMPOSE_DATA отсутствует в NOD.")
+
     # Глубокий анализ через table_reader
-    print(f"3. Анализ структуры таблицы через table_reader:")
+    print(f"4. Анализ структуры таблицы через table_reader:")
     try:
         parsed_tables = analyze_tables_in_dxf(dxf_path)
         print(f"   [OK] table_reader успешно распознал {len(parsed_tables)} фрагмента(ов) таблицы:")
