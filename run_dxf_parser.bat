@@ -66,12 +66,36 @@ echo ----------------------------------------------------------------------
 echo.
 
 REM 4. Запуск глубокого анализатора таблиц и Break Flags
-if not exist "table_reader.py" goto :FINISH
+if not exist "table_reader.py" goto :RUN_SAVER
 
 echo ----------------------------------------------------------------------
 echo 2. Детальный анализ таблиц и флагов разбиения DXF 90 - table_reader.py:
 echo ----------------------------------------------------------------------
 %PYTHON_CMD% table_reader.py "%DXF_FILE%"
+echo.
+
+:RUN_SAVER
+REM 5. Запись таблицы в ZCADonlyline.dxf -> ZCADTABLE.dxf
+if not exist "dxf_saver.py" goto :FINISH
+if not exist "ZCADonlyline.dxf" (
+    echo [!] Файл шаблона ZCADonlyline.dxf не найден в текущей директории.
+    goto :FINISH
+)
+
+echo ----------------------------------------------------------------------
+echo 3. Запись таблицы в ZCADonlyline.dxf -^> ZCADTABLE.dxf - dxf_saver.py:
+echo ----------------------------------------------------------------------
+%PYTHON_CMD% dxf_saver.py ZCADonlyline.dxf ZCADTABLE.dxf "%DXF_FILE%"
+echo.
+
+REM 6. Проверка полученного ZCADTABLE.dxf с помощью table_reader.py
+if exist "ZCADTABLE.dxf" if exist "table_reader.py" (
+    echo ----------------------------------------------------------------------
+    echo 4. Контрольная проверка созданного ZCADTABLE.dxf через table_reader.py:
+    echo ----------------------------------------------------------------------
+    %PYTHON_CMD% table_reader.py ZCADTABLE.dxf
+    echo.
+)
 
 :FINISH
 echo.
