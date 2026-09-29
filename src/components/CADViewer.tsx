@@ -1,17 +1,30 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { DXFAnalysisResult, TableFragment } from '../types/dxf';
-import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Eye, Layers } from 'lucide-react';
+import { DXFAnalysisResult, TableFragment, DXFImageEntity } from '../types/dxf';
+import {
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  RotateCcw,
+  Eye,
+  Layers,
+  Image as ImageIcon,
+  Square,
+} from 'lucide-react';
 
 interface CADViewerProps {
   analysis: DXFAnalysisResult;
   selectedTable: TableFragment | null;
   onSelectTable?: (table: TableFragment) => void;
+  selectedImage?: DXFImageEntity | null;
+  onSelectImage?: (image: DXFImageEntity | null) => void;
 }
 
 export const CADViewer: React.FC<CADViewerProps> = ({
   analysis,
   selectedTable,
   onSelectTable,
+  selectedImage,
+  onSelectImage,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -24,6 +37,55 @@ export const CADViewer: React.FC<CADViewerProps> = ({
   const [cursorCoord, setCursorCoord] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [showText, setShowText] = useState<boolean>(true);
+  const [showImages, setShowImages] = useState<boolean>(true);
+  const [showImageFrames, setShowImageFrames] = useState<boolean>(true);
+
+  // Cache for loaded HTMLImageElements
+  const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
+  const [, setLoadedImagesTick] = useState<number>(0);
+
+  // Preload raster images whenever analysis changes
+  useEffect(() => {
+    if (!analysis.images || analysis.images.length === 0) return;
+
+    analysis.images.forEach((imgEnt) => {
+      const cacheKey = imgEnt.handle;
+      const existing = imageCache.current.get(cacheKey);
+      if (existing && existing.complete && existing.naturalWidth > 0) return;
+
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+
+      // Candidates to load
+      const possibleUrls = [
+        imgEnt.resolvedSrcUrl || '',
+        `/samples/${imgEnt.imageFileName}`,
+        `/${imgEnt.imageFileName}`,
+        `/samples/testimage.png`,
+        `/testimage.png`,
+        imgEnt.imagePath,
+      ].filter(Boolean);
+
+      let urlIndex = 0;
+      const tryNextUrl = () => {
+        if (urlIndex < possibleUrls.length) {
+          img.src = possibleUrls[urlIndex++];
+        }
+      };
+
+      img.onload = () => {
+        imageCache.current.set(cacheKey, img);
+        imageCache.current.set(imgEnt.imageFileName, img);
+        setLoadedImagesTick((t) => t + 1);
+      };
+
+      img.onerror = () => {
+        tryNextUrl();
+      };
+
+      tryNextUrl();
+    });
+  }, [analysis]);
 
   // Auto-fit to drawing bounds on load
   const fitToBounds = useCallback(() => {
@@ -281,7 +343,138 @@ export const CADViewer: React.FC<CADViewerProps> = ({
       ctx.fillStyle = '#ffffff';
       ctx.fillText(badgeText, sx0 + 2, badgeY);
     });
-  }, [analysis, selectedTable, zoom, pan, showGrid, showText]);
+
+    // Render Raster Images (IMAGE entities / external references)
+    if (showImages && analysis.images && analysis.images.length > 0) {
+      analysis.images.forEach((imgEnt) => {
+        const isSelected = selectedImage?.handle === imgEnt.handle;
+        const cached =
+          imageCache.current.get(imgEnt.handle) ||
+          imageCache.current.get(imgEnt.imageFileName);
+
+        const w = imgEnt.imageSize.width;
+        const h = imgEnt.imageSize.height;
+        const ux = imgEnt.uVector.x;
+        const uy = imgEnt.uVector.y;
+        const vx = imgEnt.vVector.x;
+        const vy = imgEnt.vVector.y;
+
+        const p0 = { x: imgEnt.x, y: imgEnt.y };
+        const p1 = { x: imgEnt.x + w * ux, y: imgEnt.y + w * uy };
+        const p2 = { x: imgEnt.x + w * ux + h * vx, y: imgEnt.y + w * uy + h * vy };
+        const p3 = { x: imgEnt.x + h * vx, y: imgEnt.y + h * vy };
+
+        const s0 = { x: toScreenX(p0.x), y: toScreenY(p0.y) };
+        const s1 = { x: toScreenX(p1.x), y: toScreenY(p1.y) };
+        const s2 = { x: toScreenX(p2.x), y: toScreenY(p2.y) };
+        const s3 = { x: toScreenX(p3.x), y: toScreenY(p3.y) };
+
+        // Render actual image pixels if loaded
+        if (cached && cached.complete && cached.naturalWidth > 0) {
+          ctx.save();
+          const bScale = (imgEnt.brightness ?? 50) / 50;
+          const cScale = (imgEnt.contrast ?? 50) / 50;
+          const opacity = Math.max(0, Math.min(1, (100 - (imgEnt.fade ?? 0)) / 100));
+          ctx.filter = `brightness(${bScale}) contrast(${cScale}) opacity(${opacity})`;
+
+          // Affine transform to map local image [0..w, 0..h] (origin at top-left P3) to screen:
+          const a = ux * zoom;
+          const b = -uy * zoom;
+          const c = -vx * zoom;
+          const d = vy * zoom;
+          const e = s3.x;
+          const f = s3.y;
+
+          ctx.transform(a, b, c, d, e, f);
+          ctx.drawImage(cached, 0, 0, w, h);
+          ctx.restore();
+        } else {
+          // Placeholder CAD box while loading or if missing
+          ctx.save();
+          ctx.fillStyle = isSelected
+            ? 'rgba(56, 189, 248, 0.2)'
+            : 'rgba(30, 41, 59, 0.45)';
+          ctx.beginPath();
+          ctx.moveTo(s0.x, s0.y);
+          ctx.lineTo(s1.x, s1.y);
+          ctx.lineTo(s2.x, s2.y);
+          ctx.lineTo(s3.x, s3.y);
+          ctx.closePath();
+          ctx.fill();
+
+          // Cross diagonals
+          ctx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(s0.x, s0.y);
+          ctx.lineTo(s2.x, s2.y);
+          ctx.moveTo(s1.x, s1.y);
+          ctx.lineTo(s3.x, s3.y);
+          ctx.stroke();
+
+          const midX = (s0.x + s2.x) / 2;
+          const midY = (s0.y + s2.y) / 2;
+          ctx.font = "11px 'JetBrains Mono', monospace";
+          ctx.fillStyle = '#38bdf8';
+          ctx.textAlign = 'center';
+          ctx.fillText(`📷 XREF: ${imgEnt.imageFileName}`, midX, midY - 6);
+          ctx.font = "10px 'JetBrains Mono', monospace";
+          ctx.fillStyle = '#94a3b8';
+          ctx.fillText(`Растр: ${w}×${h} px (${imgEnt.cadWidth}×${imgEnt.cadHeight} mm)`, midX, midY + 10);
+          ctx.textAlign = 'start';
+          ctx.restore();
+        }
+
+        // Image Frame / Border (AutoCAD IMAGEFRAME)
+        if (showImageFrames || isSelected) {
+          ctx.save();
+          ctx.strokeStyle = isSelected ? '#38bdf8' : 'rgba(56, 189, 248, 0.6)';
+          ctx.lineWidth = isSelected ? 2.5 : 1.2;
+          if (!isSelected) {
+            ctx.setLineDash([4, 4]);
+          }
+
+          ctx.beginPath();
+          ctx.moveTo(s0.x, s0.y);
+          ctx.lineTo(s1.x, s1.y);
+          ctx.lineTo(s2.x, s2.y);
+          ctx.lineTo(s3.x, s3.y);
+          ctx.closePath();
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Corner grip handles if selected
+          if (isSelected) {
+            const gripSize = 7;
+            [s0, s1, s2, s3].forEach((pt) => {
+              ctx.fillStyle = '#38bdf8';
+              ctx.fillRect(pt.x - gripSize / 2, pt.y - gripSize / 2, gripSize, gripSize);
+              ctx.strokeStyle = '#ffffff';
+              ctx.lineWidth = 1;
+              ctx.strokeRect(pt.x - gripSize / 2, pt.y - gripSize / 2, gripSize, gripSize);
+            });
+          }
+
+          // Label Badge Above Image
+          const badgeText = `📷 XREF: ${imgEnt.imageFileName} (0x${imgEnt.handle} | ${w}×${h}px)`;
+          ctx.font = "10px 'JetBrains Mono', monospace";
+          const textW = ctx.measureText(badgeText).width;
+          const badgeX = s3.x;
+          const badgeY = Math.min(s2.y, s3.y) - 8;
+
+          ctx.fillStyle = isSelected ? '#0284c7' : '#0f172a';
+          ctx.fillRect(badgeX - 2, badgeY - 12, textW + 10, 16);
+          ctx.strokeStyle = isSelected ? '#38bdf8' : '#334155';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(badgeX - 2, badgeY - 12, textW + 10, 16);
+
+          ctx.fillStyle = '#f8fafc';
+          ctx.fillText(badgeText, badgeX + 3, badgeY);
+          ctx.restore();
+        }
+      });
+    }
+  }, [analysis, selectedTable, selectedImage, zoom, pan, showGrid, showText, showImages, showImageFrames]);
 
   // Mouse Interaction: Pan
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -330,28 +523,56 @@ export const CADViewer: React.FC<CADViewerProps> = ({
     setPan({ x: newPanX, y: newPanY });
   };
 
-  // Click on Canvas to Select Table
+  // Click on Canvas to Select Table or Image
   const handleClick = (e: React.MouseEvent) => {
-    if (!canvasRef.current || !onSelectTable) return;
+    if (!canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
     const clickX = (e.clientX - rect.left - pan.x) / zoom;
     const clickY = (pan.y - (e.clientY - rect.top)) / zoom;
 
-    // Check if clicked inside any table bounding box
-    for (const tbl of analysis.tables) {
-      const totalW = tbl.columnWidths.reduce((a, b) => a + b, 0);
-      const totalH = tbl.rowHeights.reduce((a, b) => a + b, 0);
+    // Check if clicked inside any image bounding box
+    if (analysis.images && analysis.images.length > 0) {
+      for (const imgEnt of analysis.images) {
+        const w = imgEnt.imageSize.width;
+        const h = imgEnt.imageSize.height;
+        const ux = imgEnt.uVector.x;
+        const uy = imgEnt.uVector.y;
+        const vx = imgEnt.vVector.x;
+        const vy = imgEnt.vVector.y;
 
-      if (
-        clickX >= tbl.x &&
-        clickX <= tbl.x + totalW &&
-        clickY <= tbl.y &&
-        clickY >= tbl.y - totalH
-      ) {
-        onSelectTable(tbl);
-        return;
+        const minX = Math.min(imgEnt.x, imgEnt.x + w * ux, imgEnt.x + h * vx, imgEnt.x + w * ux + h * vx);
+        const maxX = Math.max(imgEnt.x, imgEnt.x + w * ux, imgEnt.x + h * vx, imgEnt.x + w * ux + h * vx);
+        const minY = Math.min(imgEnt.y, imgEnt.y + w * uy, imgEnt.y + h * vy, imgEnt.y + w * uy + h * vy);
+        const maxY = Math.max(imgEnt.y, imgEnt.y + w * uy, imgEnt.y + h * vy, imgEnt.y + w * uy + h * vy);
+
+        if (clickX >= minX && clickX <= maxX && clickY >= minY && clickY <= maxY) {
+          onSelectImage?.(imgEnt);
+          return;
+        }
       }
     }
+
+    // Check if clicked inside any table bounding box
+    if (onSelectTable) {
+      for (const tbl of analysis.tables) {
+        const totalW = tbl.columnWidths.reduce((a, b) => a + b, 0);
+        const totalH = tbl.rowHeights.reduce((a, b) => a + b, 0);
+
+        if (
+          clickX >= tbl.x &&
+          clickX <= tbl.x + totalW &&
+          clickY <= tbl.y &&
+          clickY >= tbl.y - totalH
+        ) {
+          onSelectTable(tbl);
+          onSelectImage?.(null);
+          return;
+        }
+      }
+    }
+
+    // Deselect if clicked in empty space
+    onSelectImage?.(null);
   };
 
   return (
@@ -423,6 +644,25 @@ export const CADViewer: React.FC<CADViewerProps> = ({
         >
           <Eye className="w-4 h-4" />
         </button>
+        {analysis.images && analysis.images.length > 0 && (
+          <>
+            <div className="w-px h-4 bg-slate-700 mx-1" />
+            <button
+              onClick={() => setShowImages((i) => !i)}
+              className={`p-1.5 rounded transition-colors ${showImages ? 'bg-cyan-600/30 text-cyan-400' : 'hover:bg-slate-800 text-slate-500'}`}
+              title="Показать/скрыть растровые изображения (XREF)"
+            >
+              <ImageIcon className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setShowImageFrames((f) => !f)}
+              className={`p-1.5 rounded transition-colors ${showImageFrames ? 'bg-cyan-600/30 text-cyan-400' : 'hover:bg-slate-800 text-slate-500'}`}
+              title="Показать/скрыть рамку изображения (IMAGEFRAME)"
+            >
+              <Square className="w-4 h-4" />
+            </button>
+          </>
+        )}
       </div>
 
       {/* Floating Coordinate Status Bar */}
@@ -437,6 +677,13 @@ export const CADViewer: React.FC<CADViewerProps> = ({
         <span className="text-slate-600">|</span>
         <span className="text-slate-400">Tables:</span>
         <span className="text-blue-400 font-semibold">{analysis.tables.length}</span>
+        {analysis.images && analysis.images.length > 0 && (
+          <>
+            <span className="text-slate-600">|</span>
+            <span className="text-slate-400">Images:</span>
+            <span className="text-cyan-400 font-semibold">{analysis.images.length}</span>
+          </>
+        )}
       </div>
     </div>
   );

@@ -11,6 +11,9 @@ import {
   DXFLwPolylineEntity,
   DXFCircleEntity,
   DXFTextEntity,
+  DXFImageEntity,
+  DXFImageDefInfo,
+  DXFExternalReference,
 } from '../types/dxf';
 
 /**
@@ -121,6 +124,10 @@ export function analyzeDXF(
   const entityCounts: Record<string, number> = {};
   const tables: TableFragment[] = [];
   const renderableEntities: DXFRenderableEntity[] = [];
+  const images: DXFImageEntity[] = [];
+  const externalReferences: DXFExternalReference[] = [];
+  const imageDefs = new Map<string, DXFImageDefInfo>();
+  let rasterVariables: { imageFrame: number; imageQuality: number; units: number } | undefined = undefined;
   const layersSet = new Set<string>();
   const tableStyles: { handle: string; name: string; textHeight?: number }[] = [];
   let roundtripTableBreakData: {
@@ -267,10 +274,87 @@ export function analyzeDXF(
             totalTableHeight: rTotalHeight,
           };
         }
+      } else if (tag.code === 0 && tag.value === 'IMAGEDEF') {
+        const defTags: DXFTag[] = [tag];
+        let j = i + 1;
+        while (j < tags.length && tags[j].code !== 0) {
+          defTags.push(tags[j]);
+          j++;
+        }
+        const h = String(defTags.find((t) => t.code === 5)?.value || '').toUpperCase();
+        const p = String(defTags.find((t) => t.code === 1)?.value || '');
+        const pw = Number(defTags.find((t) => t.code === 10)?.value || 0);
+        const ph = Number(defTags.find((t) => t.code === 20)?.value || 0);
+        const sx = Number(defTags.find((t) => t.code === 11)?.value || 1);
+        const sy = Number(defTags.find((t) => t.code === 21)?.value || 1);
+        const loaded = Number(defTags.find((t) => t.code === 280)?.value ?? 1) === 1;
+        const resUnits = Number(defTags.find((t) => t.code === 281)?.value ?? 0);
+        const unitNames: Record<number, string> = {
+          0: 'No units',
+          1: 'Millimeter (mm)',
+          2: 'Centimeter (cm)',
+          5: 'Inch (in)',
+        };
+        const cleanP = p.replace(/\\/g, '/');
+        const fname = cleanP.split('/').pop() || 'testimage.png';
+        if (h) {
+          imageDefs.set(h, {
+            handle: h,
+            path: p,
+            fileName: fname,
+            pixelWidth: pw,
+            pixelHeight: ph,
+            pixelSizeX: sx,
+            pixelSizeY: sy,
+            isLoaded: loaded,
+            resolutionUnits: resUnits,
+            resolutionUnitName: unitNames[resUnits] || 'Custom',
+          });
+        }
+      } else if (tag.code === 0 && tag.value === 'RASTERVARIABLES') {
+        const rTags: DXFTag[] = [tag];
+        let j = i + 1;
+        while (j < tags.length && tags[j].code !== 0) {
+          rTags.push(tags[j]);
+          j++;
+        }
+        rasterVariables = {
+          imageFrame: Number(rTags.find((t) => t.code === 70)?.value ?? 1),
+          imageQuality: Number(rTags.find((t) => t.code === 71)?.value ?? 1),
+          units: Number(rTags.find((t) => t.code === 72)?.value ?? 5),
+        };
       }
     }
 
-    // Parse ENTITIES (LINE, LWPOLYLINE, CIRCLE, TEXT, ACAD_TABLE)
+    // Parse BLOCKS (detect DWG xrefs)
+    if (inSection && currentSection === 'BLOCKS') {
+      if (tag.code === 0 && tag.value === 'BLOCK') {
+        const blockTags: DXFTag[] = [tag];
+        let j = i + 1;
+        while (j < tags.length && tags[j].code !== 0) {
+          blockTags.push(tags[j]);
+          j++;
+        }
+        const bName = String(blockTags.find((t) => t.code === 2)?.value || '');
+        const bFlags = Number(blockTags.find((t) => t.code === 70)?.value || 0);
+        const bPath = String(blockTags.find((t) => t.code === 1)?.value || '');
+        const bHandle = String(blockTags.find((t) => t.code === 5)?.value || '');
+        if ((bFlags & 4) !== 0 || (bFlags & 32) !== 0 || (bPath && bPath.trim().length > 0)) {
+          const bFileName = bPath.replace(/\\/g, '/').split('/').pop() || bName;
+          externalReferences.push({
+            id: `xref_dwg_${bHandle || bName}`,
+            name: bName,
+            type: 'DwgXref',
+            path: bPath,
+            resolvedFileName: bFileName,
+            handle: bHandle,
+            status: (bFlags & 32) !== 0 ? 'Loaded' : 'NotFound',
+          });
+        }
+      }
+    }
+
+    // Parse ENTITIES (LINE, LWPOLYLINE, CIRCLE, TEXT, ACAD_TABLE, IMAGE)
     if (inSection && currentSection === 'ENTITIES') {
       if (tag.code === 0 && typeof tag.value === 'string') {
         const entityType = tag.value.toUpperCase();
@@ -297,6 +381,38 @@ export function analyzeDXF(
             tableContentRowDefs
           );
           tables.push(tableObj);
+        } else if (entityType === 'IMAGE') {
+          const img = parseImageEntity(entityTags, layer, imageDefs);
+          if (img) {
+            renderableEntities.push(img);
+            images.push(img);
+
+            // Register in externalReferences
+            const existingXref = externalReferences.find(
+              (x) => x.type === 'RasterImage' && x.handle.toUpperCase() === img.imageDefHandle.toUpperCase()
+            );
+            if (!existingXref) {
+              externalReferences.push({
+                id: `xref_img_${img.handle}`,
+                name: img.imageFileName,
+                type: 'RasterImage',
+                path: img.imagePath || `.\\${img.imageFileName}`,
+                resolvedFileName: img.imageFileName,
+                handle: img.imageDefHandle || img.handle,
+                entityHandle: img.handle,
+                status: img.imageDef ? (img.imageDef.isLoaded ? 'Loaded' : 'Unloaded') : 'Loaded',
+                pixelSize: { width: img.imageSize.width, height: img.imageSize.height },
+                cadSize: { width: img.cadWidth, height: img.cadHeight },
+                position: { x: img.x, y: img.y, z: img.z },
+                layer: img.layer,
+                imageEntity: img,
+              });
+            } else {
+              existingXref.imageEntity = img;
+              existingXref.position = { x: img.x, y: img.y, z: img.z };
+              existingXref.cadSize = { width: img.cadWidth, height: img.cadHeight };
+            }
+          }
         } else if (entityType === 'LINE') {
           const line = parseLineEntity(entityTags, layer);
           if (line) renderableEntities.push(line);
@@ -318,6 +434,36 @@ export function analyzeDXF(
 
     i++;
   }
+
+  // Link images with IMAGEDEF definitions extracted from OBJECTS section
+  images.forEach((img) => {
+    let foundDef: DXFImageDefInfo | undefined;
+    for (const [defH, def] of imageDefs.entries()) {
+      if (defH.toUpperCase() === img.imageDefHandle.toUpperCase() || (!foundDef && imageDefs.size === 1)) {
+        foundDef = def;
+        break;
+      }
+    }
+    if (foundDef) {
+      img.imageDef = foundDef;
+      img.imagePath = foundDef.path;
+      img.imageFileName = foundDef.fileName;
+      img.resolvedSrcUrl = `/samples/${foundDef.fileName}`;
+    }
+  });
+
+  // Link externalReferences with IMAGEDEF definitions
+  externalReferences.forEach((xref) => {
+    if (xref.type === 'RasterImage') {
+      const def = imageDefs.get(xref.handle.toUpperCase()) || (imageDefs.size === 1 ? Array.from(imageDefs.values())[0] : undefined);
+      if (def) {
+        xref.path = def.path;
+        xref.resolvedFileName = def.fileName;
+        xref.name = def.fileName;
+        xref.status = def.isLoaded ? 'Loaded' : 'Unloaded';
+      }
+    }
+  });
 
   // Determine bounds from renderables and tables
   let minX = Infinity;
@@ -343,6 +489,18 @@ export function analyzeDXF(
       updateBounds(ent.x + ent.radius, ent.y + ent.radius);
     } else if (ent.type === 'TEXT' || ent.type === 'MTEXT') {
       updateBounds(ent.x, ent.y);
+    } else if (ent.type === 'IMAGE') {
+      const w = ent.imageSize.width;
+      const h = ent.imageSize.height;
+      const ux = ent.uVector.x;
+      const uy = ent.uVector.y;
+      const vx = ent.vVector.x;
+      const vy = ent.vVector.y;
+
+      updateBounds(ent.x, ent.y);
+      updateBounds(ent.x + w * ux, ent.y + w * uy);
+      updateBounds(ent.x + w * ux + h * vx, ent.y + w * uy + h * vy);
+      updateBounds(ent.x + h * vx, ent.y + h * vy);
     }
   });
 
@@ -510,6 +668,9 @@ export function analyzeDXF(
     entityCounts,
     tables,
     renderableEntities,
+    images,
+    externalReferences,
+    rasterVariables,
     layers: Array.from(layersSet).sort(),
     maxHandleHex: maxHandle ? maxHandle.toString(16).toUpperCase() : '1000',
     extents: { minX, minY, maxX, maxY },
@@ -947,4 +1108,93 @@ function parseTextEntity(
   });
 
   return { type, layer, x, y, z, text, height };
+}
+
+function parseImageEntity(
+  tags: DXFTag[],
+  layer: string,
+  imageDefs: Map<string, DXFImageDefInfo>
+): DXFImageEntity | null {
+  const handle = String(tags.find((t) => t.code === 5)?.value || '');
+  const x = Number(tags.find((t) => t.code === 10)?.value || 0);
+  const y = Number(tags.find((t) => t.code === 20)?.value || 0);
+  const z = Number(tags.find((t) => t.code === 30)?.value || 0);
+
+  const uX = Number(tags.find((t) => t.code === 11)?.value ?? 1);
+  const uY = Number(tags.find((t) => t.code === 21)?.value ?? 0);
+  const uZ = Number(tags.find((t) => t.code === 31)?.value ?? 0);
+
+  const vX = Number(tags.find((t) => t.code === 12)?.value ?? 0);
+  const vY = Number(tags.find((t) => t.code === 22)?.value ?? 1);
+  const vZ = Number(tags.find((t) => t.code === 32)?.value ?? 0);
+
+  const width = Number(tags.find((t) => t.code === 13)?.value || 100);
+  const height = Number(tags.find((t) => t.code === 23)?.value || 100);
+
+  const imageDefHandle = String(tags.find((t) => t.code === 340)?.value || '').toUpperCase();
+  const displayProps = Number(tags.find((t) => t.code === 70)?.value ?? 7);
+  const clipping = Number(tags.find((t) => t.code === 280)?.value ?? 0) === 1;
+  const brightness = Number(tags.find((t) => t.code === 281)?.value ?? 50);
+  const contrast = Number(tags.find((t) => t.code === 282)?.value ?? 50);
+  const fade = Number(tags.find((t) => t.code === 283)?.value ?? 0);
+
+  // Look up IMAGEDEF by handle (case-insensitive)
+  let foundDef: DXFImageDefInfo | undefined;
+  for (const [defH, def] of imageDefs.entries()) {
+    if (defH.toUpperCase() === imageDefHandle || (!foundDef && imageDefs.size === 1)) {
+      foundDef = def;
+      break;
+    }
+  }
+
+  const imagePath = foundDef?.path || '';
+  const cleanPath = imagePath.replace(/\\/g, '/');
+  const imageFileName = foundDef?.fileName || (cleanPath ? cleanPath.split('/').pop() || 'testimage.png' : 'testimage.png');
+
+  const uLen = Math.hypot(uX, uY);
+  const vLen = Math.hypot(vX, vY);
+  const cadWidth = parseFloat((width * uLen).toFixed(4));
+  const cadHeight = parseFloat((height * vLen).toFixed(4));
+  const rotationDeg = parseFloat(((Math.atan2(uY, uX) * 180) / Math.PI).toFixed(2));
+
+  // Collect clip vertices if any
+  const clipVertices: { x: number; y: number }[] = [];
+  for (let k = 0; k < tags.length; k++) {
+    if (tags[k].code === 14 && k + 1 < tags.length && tags[k + 1].code === 24) {
+      clipVertices.push({
+        x: Number(tags[k].value),
+        y: Number(tags[k + 1].value),
+      });
+    }
+  }
+
+  const resolvedSrcUrl = `/samples/${imageFileName}`;
+
+  return {
+    type: 'IMAGE',
+    handle,
+    layer,
+    x,
+    y,
+    z,
+    uVector: { x: uX, y: uY, z: uZ },
+    vVector: { x: vX, y: vY, z: vZ },
+    imageSize: { width, height },
+    cadWidth,
+    cadHeight,
+    rotationDeg,
+    imageDefHandle,
+    imagePath,
+    imageFileName,
+    resolvedSrcUrl,
+    displayProps,
+    showImage: (displayProps & 1) !== 0,
+    transparency: (displayProps & 8) !== 0,
+    clipping,
+    brightness,
+    contrast,
+    fade,
+    clipVertices: clipVertices.length > 0 ? clipVertices : undefined,
+    imageDef: foundDef,
+  };
 }

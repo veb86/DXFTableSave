@@ -79,26 +79,37 @@ export const Header: React.FC<HeaderProps> = ({
             Presets:
           </span>
           <button
+            onClick={() => onLoadPreset('acadtableandhrefImage2007.dxf')}
+            className={`text-xs px-2.5 py-1 rounded transition-colors flex items-center gap-1.5 ${
+              currentFileName === 'acadtableandhrefImage2007.dxf'
+                ? 'bg-cyan-600 text-white font-medium shadow-sm'
+                : 'text-cyan-300 hover:bg-slate-800'
+            }`}
+            title="AutoCAD sample with Split Table + External Reference Image (testimage.png)"
+          >
+            <span>Таблица + Картинка (Xref)</span>
+          </button>
+          <button
             onClick={() => onLoadPreset('acadtable2007.dxf')}
             className={`text-xs px-2.5 py-1 rounded transition-colors ${
               currentFileName === 'acadtable2007.dxf'
                 ? 'bg-blue-600 text-white font-medium shadow-sm'
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
-            title="AutoCAD 2007 sample with 4 table break fragments"
+            title="AutoCAD 2007 sample with table break fragments"
           >
             acadtable2007.dxf
           </button>
           <button
-            onClick={() => onLoadPreset('AUTOCADonlyline.dxf')}
+            onClick={() => onLoadPreset('acadtableandOLE2007.dxf')}
             className={`text-xs px-2.5 py-1 rounded transition-colors ${
-              currentFileName === 'AUTOCADonlyline.dxf'
+              currentFileName === 'acadtableandOLE2007.dxf'
                 ? 'bg-blue-600 text-white font-medium shadow-sm'
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
-            title="AutoCAD sample drawing with line geometry"
+            title="AutoCAD sample with Table and OLE object"
           >
-            AUTOCADonlyline.dxf
+            acadtableandOLE2007.dxf
           </button>
           <button
             onClick={() => onLoadPreset('ZCADonlyline.dxf')}

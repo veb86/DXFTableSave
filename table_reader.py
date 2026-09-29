@@ -511,6 +511,231 @@ def print_table_report(table_data: Dict[str, Any], show_all_cells: bool = True) 
     print()
 
 
+def analyze_images_and_xrefs_in_dxf(dxf_path: str) -> Dict[str, Any]:
+    """
+    Parses and extracts all external references (XREFs), raster image definitions
+    (IMAGEDEF), and image entities (IMAGE) from DXF.
+    """
+    import math
+
+    tags = list(read_tags(dxf_path))
+    image_defs: Dict[str, Dict[str, Any]] = {}
+    images: List[Dict[str, Any]] = []
+    dwg_xrefs: List[Dict[str, Any]] = []
+    raster_vars: Dict[str, Any] = {}
+
+    in_objects = False
+    in_entities = False
+    in_blocks = False
+
+    i = 0
+    while i < len(tags):
+        tag = tags[i]
+
+        if tag.code == 0 and tag.value == "SECTION":
+            if i + 1 < len(tags) and tags[i + 1].code == 2:
+                sec = str(tags[i + 1].value).upper()
+                in_objects = (sec == "OBJECTS")
+                in_entities = (sec == "ENTITIES")
+                in_blocks = (sec == "BLOCKS")
+                i += 2
+                continue
+
+        if tag.code == 0 and tag.value == "ENDSEC":
+            in_objects = False
+            in_entities = False
+            in_blocks = False
+            i += 1
+            continue
+
+        # 1. BLOCKS: DWG Xrefs
+        if in_blocks and tag.code == 0 and tag.value == "BLOCK":
+            block_tags = [tag]
+            j = i + 1
+            while j < len(tags) and tags[j].code != 0:
+                block_tags.append(tags[j])
+                j += 1
+            b_name = next((str(t.value) for t in block_tags if t.code == 2), "")
+            b_flags = next((int(t.value) for t in block_tags if t.code == 70), 0)
+            b_path = next((str(t.value) for t in block_tags if t.code == 1), "")
+            b_handle = next((str(t.value) for t in block_tags if t.code == 5), "")
+            if (b_flags & 4) or (b_flags & 32) or b_path:
+                dwg_xrefs.append({
+                    "name": b_name,
+                    "handle": b_handle,
+                    "path": b_path,
+                    "flags": b_flags,
+                    "is_resolved": bool(b_flags & 32),
+                })
+            i = j
+            continue
+
+        # 2. OBJECTS: IMAGEDEF & RASTERVARIABLES
+        if in_objects and tag.code == 0:
+            if tag.value == "IMAGEDEF":
+                def_tags = [tag]
+                j = i + 1
+                while j < len(tags) and tags[j].code != 0:
+                    def_tags.append(tags[j])
+                    j += 1
+                h = next((str(t.value) for t in def_tags if t.code == 5), "").upper()
+                p = next((str(t.value) for t in def_tags if t.code == 1), "")
+                pw = next((float(t.value) for t in def_tags if t.code == 10), 0.0)
+                ph = next((float(t.value) for t in def_tags if t.code == 20), 0.0)
+                sx = next((float(t.value) for t in def_tags if t.code == 11), 1.0)
+                sy = next((float(t.value) for t in def_tags if t.code == 21), 1.0)
+                loaded = next((int(t.value) for t in def_tags if t.code == 280), 1) == 1
+                units = next((int(t.value) for t in def_tags if t.code == 281), 0)
+                unit_names = {0: "None", 1: "Millimeter (mm)", 2: "Centimeter (cm)", 5: "Inch (in)"}
+                if h:
+                    image_defs[h] = {
+                        "handle": h,
+                        "path": p,
+                        "pixel_width": pw,
+                        "pixel_height": ph,
+                        "pixel_size_x": sx,
+                        "pixel_size_y": sy,
+                        "is_loaded": loaded,
+                        "units": units,
+                        "units_name": unit_names.get(units, "Custom"),
+                    }
+                i = j
+                continue
+            elif tag.value == "RASTERVARIABLES":
+                r_tags = [tag]
+                j = i + 1
+                while j < len(tags) and tags[j].code != 0:
+                    r_tags.append(tags[j])
+                    j += 1
+                raster_vars = {
+                    "image_frame": next((int(t.value) for t in r_tags if t.code == 70), 1),
+                    "image_quality": next((int(t.value) for t in r_tags if t.code == 71), 1),
+                    "units": next((int(t.value) for t in r_tags if t.code == 72), 5),
+                }
+                i = j
+                continue
+
+        # 3. ENTITIES: IMAGE
+        if in_entities and tag.code == 0 and tag.value == "IMAGE":
+            img_tags = [tag]
+            j = i + 1
+            while j < len(tags) and tags[j].code != 0:
+                img_tags.append(tags[j])
+                j += 1
+
+            h = next((str(t.value) for t in img_tags if t.code == 5), "")
+            layer = next((str(t.value) for t in img_tags if t.code == 8), "0")
+            ins_x = next((float(t.value) for t in img_tags if t.code == 10), 0.0)
+            ins_y = next((float(t.value) for t in img_tags if t.code == 20), 0.0)
+            ins_z = next((float(t.value) for t in img_tags if t.code == 30), 0.0)
+
+            ux = next((float(t.value) for t in img_tags if t.code == 11), 1.0)
+            uy = next((float(t.value) for t in img_tags if t.code == 21), 0.0)
+            uz = next((float(t.value) for t in img_tags if t.code == 31), 0.0)
+
+            vx = next((float(t.value) for t in img_tags if t.code == 12), 0.0)
+            vy = next((float(t.value) for t in img_tags if t.code == 22), 1.0)
+            vz = next((float(t.value) for t in img_tags if t.code == 32), 0.0)
+
+            uw = next((float(t.value) for t in img_tags if t.code == 13), 100.0)
+            vh = next((float(t.value) for t in img_tags if t.code == 23), 100.0)
+
+            def_handle = next((str(t.value) for t in img_tags if t.code == 340), "").upper()
+            display_props = next((int(t.value) for t in img_tags if t.code == 70), 7)
+            clipping = next((int(t.value) for t in img_tags if t.code == 280), 0) == 1
+            brightness = next((int(t.value) for t in img_tags if t.code == 281), 50)
+            contrast = next((int(t.value) for t in img_tags if t.code == 282), 50)
+            fade = next((int(t.value) for t in img_tags if t.code == 283), 0)
+
+            u_len = math.hypot(ux, uy)
+            v_len = math.hypot(vx, vy)
+            cad_w = uw * u_len
+            cad_h = vh * v_len
+            rot_deg = math.degrees(math.atan2(uy, ux))
+
+            img_def = image_defs.get(def_handle)
+
+            images.append({
+                "handle": h,
+                "layer": layer,
+                "insert_point": (ins_x, ins_y, ins_z),
+                "u_vector": (ux, uy, uz),
+                "v_vector": (vx, vy, vz),
+                "pixel_size": (uw, vh),
+                "cad_size": (cad_w, cad_h),
+                "rotation_deg": rot_deg,
+                "def_handle": def_handle,
+                "imagedef": img_def,
+                "display_props": display_props,
+                "clipping": clipping,
+                "brightness": brightness,
+                "contrast": contrast,
+                "fade": fade,
+            })
+            i = j
+            continue
+
+        i += 1
+
+    for img in images:
+        h = img["def_handle"].upper()
+        if h in image_defs:
+            img["imagedef"] = image_defs[h]
+        elif len(image_defs) == 1:
+            img["imagedef"] = list(image_defs.values())[0]
+
+    return {
+        "images": images,
+        "imagedefs": image_defs,
+        "dwg_xrefs": dwg_xrefs,
+        "raster_variables": raster_vars,
+    }
+
+
+def print_xrefs_report(xref_data: Dict[str, Any]):
+    images = xref_data.get("images", [])
+    imagedefs = xref_data.get("imagedefs", {})
+    dwg_xrefs = xref_data.get("dwg_xrefs", [])
+
+    print("=" * 90)
+    print("ВНЕШНИЕ ССЫЛКИ И РАСТРОВЫЕ ИЗОБРАЖЕНИЯ (EXTERNAL REFERENCES & IMAGES)")
+    print("=" * 90)
+    print(f"Обнаружено растровых изображений (IMAGE):       {len(images)}")
+    print(f"Обнаружено определений изображений (IMAGEDEF): {len(imagedefs)}")
+    print(f"Обнаружено DWG внешних ссылок (XREF BLOCKS):    {len(dwg_xrefs)}")
+    print("-" * 90)
+
+    for idx, img in enumerate(images, 1):
+        def_info = img.get("imagedef") or {}
+        img_path = def_info.get("path", "(путь не задан)")
+        ins = img["insert_point"]
+        u = img["u_vector"]
+        v = img["v_vector"]
+        pw, ph = img["pixel_size"]
+        cw, ch = img["cad_size"]
+
+        print(f"РАСТРОВОЕ ИЗОБРАЖЕНИЕ #{idx} (Handle: 0x{img['handle']})")
+        print(f"  Файл ссылки (IMAGEDEF):  {img_path} [0x{img['def_handle']}]")
+        print(f"  Статус загрузки:        {'Загружено (Loaded)' if def_info.get('is_loaded', True) else 'Выгружено (Unloaded)'}")
+        print(f"  Слой (Layer):           {img['layer']}")
+        print(f"  Точка вставки (WCS):    X={ins[0]:.4f}, Y={ins[1]:.4f}, Z={ins[2]:.4f}")
+        print(f"  Размер в пикселях:      {pw:.0f} x {ph:.0f} px")
+        print(f"  Вектор U (шаг X):       [{u[0]:.6f}, {u[1]:.6f}]")
+        print(f"  Вектор V (шаг Y):       [{v[0]:.6f}, {v[1]:.6f}]")
+        print(f"  Размер на чертеже:      {cw:.4f} x {ch:.4f} мм")
+        print(f"  Угол поворота:          {img['rotation_deg']:.2f}°")
+        print(f"  Свойства изображения:   Яркость={img['brightness']}%, Контраст={img['contrast']}%, Слияние={img['fade']}%")
+        print(f"  Контур подрезки (Clip): {'Включен' if img['clipping'] else 'Отключен'}")
+        print("-" * 90)
+
+    for idx, xref in enumerate(dwg_xrefs, 1):
+        print(f"DWG ВНЕШНЯЯ ССЫЛКА #{idx} (Block: {xref['name']}, Handle: 0x{xref['handle']})")
+        print(f"  Путь к чертежу:         {xref['path']}")
+        print(f"  Статус разрешения:      {'Разрешена (Resolved)' if xref['is_resolved'] else 'Не найдена'}")
+        print("-" * 90)
+    print()
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python table_reader.py <file.dxf>")
@@ -518,9 +743,14 @@ if __name__ == "__main__":
 
     dxf_path = sys.argv[1]
     tables = analyze_tables_in_dxf(dxf_path)
+    xrefs_info = analyze_images_and_xrefs_in_dxf(dxf_path)
 
-    print(f"\nAnalyzing tables in: {dxf_path}")
-    print(f"Found {len(tables)} ACAD_TABLE entities.\n")
+    print(f"\nAnalyzing: {dxf_path}")
+    print(f"Found {len(tables)} ACAD_TABLE entities.")
+    print(f"Found {len(xrefs_info['images'])} IMAGE entities and {len(xrefs_info['imagedefs'])} IMAGEDEF objects.\n")
 
     for tbl in tables:
         print_table_report(tbl)
+
+    print_xrefs_report(xrefs_info)
+

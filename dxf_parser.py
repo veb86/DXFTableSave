@@ -127,6 +127,54 @@ def extract_entities_by_type(tags: List[DXFTag], target_type: str = "ACAD_TABLE"
     return entities
 
 
+def extract_objects_by_type(tags: List[DXFTag], target_type: str) -> List[List[DXFTag]]:
+    """
+    Extracts all object tag blocks of a given type (e.g. 'IMAGEDEF', 'TABLESTYLE', 'DICTIONARY')
+    from the OBJECTS section.
+    """
+    target_type = target_type.upper()
+    objects: List[List[DXFTag]] = []
+    current_obj: Optional[List[DXFTag]] = None
+    in_objects_section = False
+
+    i = 0
+    while i < len(tags):
+        tag = tags[i]
+
+        if tag.code == 0 and tag.value == "SECTION":
+            if i + 1 < len(tags) and tags[i + 1].code == 2:
+                sec_name = str(tags[i + 1].value).upper()
+                in_objects_section = (sec_name == "OBJECTS")
+                i += 2
+                continue
+
+        if tag.code == 0 and tag.value == "ENDSEC":
+            in_objects_section = False
+            if current_obj is not None:
+                objects.append(current_obj)
+                current_obj = None
+            i += 1
+            continue
+
+        if in_objects_section and tag.code == 0:
+            if current_obj is not None:
+                objects.append(current_obj)
+                current_obj = None
+
+            if str(tag.value).upper() == target_type:
+                current_obj = [tag]
+
+        elif current_obj is not None:
+            current_obj.append(tag)
+
+        i += 1
+
+    if current_obj is not None:
+        objects.append(current_obj)
+
+    return objects
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python dxf_parser.py <dxf_file>")
@@ -137,3 +185,7 @@ if __name__ == "__main__":
     print(f"Total tags parsed from {filename}: {len(all_tags)}")
     tables = extract_entities_by_type(all_tags, "ACAD_TABLE")
     print(f"ACAD_TABLE entities found: {len(tables)}")
+    images = extract_entities_by_type(all_tags, "IMAGE")
+    print(f"IMAGE entities found: {len(images)}")
+    imagedefs = extract_objects_by_type(all_tags, "IMAGEDEF")
+    print(f"IMAGEDEF objects found: {len(imagedefs)}")

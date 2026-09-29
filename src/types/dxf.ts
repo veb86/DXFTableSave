@@ -171,11 +171,71 @@ export interface DXFTextEntity {
   color?: number;
 }
 
+export interface DXFImageDefInfo {
+  handle: string;
+  path: string;
+  fileName: string;
+  pixelWidth: number;
+  pixelHeight: number;
+  pixelSizeX: number;
+  pixelSizeY: number;
+  isLoaded: boolean;
+  resolutionUnits: number; // 0=None, 1=mm, 2=cm, 5=in
+  resolutionUnitName: string;
+}
+
+export interface DXFImageEntity {
+  type: 'IMAGE';
+  handle: string;
+  layer: string;
+  x: number; // insertion X (group 10)
+  y: number; // insertion Y (group 20)
+  z: number; // insertion Z (group 30)
+  uVector: { x: number; y: number; z: number }; // group 11, 21, 31
+  vVector: { x: number; y: number; z: number }; // group 12, 22, 32
+  imageSize: { width: number; height: number }; // display size in pixels (group 13, 23)
+  cadWidth: number; // calculated width in CAD units (imageSize.width * |uVector|)
+  cadHeight: number; // calculated height in CAD units (imageSize.height * |vVector|)
+  rotationDeg: number; // calculated rotation angle in degrees
+  imageDefHandle: string; // group 340
+  imagePath: string; // resolved from IMAGEDEF group 1
+  imageFileName: string; // basename e.g. "testimage.png"
+  resolvedSrcUrl?: string; // URL for browser <img> or blob url
+  displayProps: number; // group 70
+  showImage: boolean;
+  transparency: boolean;
+  clipping: boolean; // group 280
+  brightness: number; // group 281 (0..100)
+  contrast: number; // group 282 (0..100)
+  fade: number; // group 283 (0..100)
+  clipVertices?: { x: number; y: number }[]; // group 14, 24
+  imageDef?: DXFImageDefInfo;
+  color?: number;
+}
+
+export interface DXFExternalReference {
+  id: string;
+  name: string;
+  type: 'RasterImage' | 'DwgXref';
+  path: string;
+  resolvedFileName: string;
+  handle: string;
+  status: 'Loaded' | 'NotFound' | 'Unloaded';
+  entityHandle?: string;
+  pixelSize?: { width: number; height: number };
+  cadSize?: { width: number; height: number };
+  position?: { x: number; y: number; z: number };
+  layer?: string;
+  customDataUrl?: string; // if user uploads replaced/missing image file in UI
+  imageEntity?: DXFImageEntity;
+}
+
 export type DXFRenderableEntity =
   | DXFLineEntity
   | DXFLwPolylineEntity
   | DXFCircleEntity
-  | DXFTextEntity;
+  | DXFTextEntity
+  | DXFImageEntity;
 
 export interface DXFAnalysisResult {
   fileName: string;
@@ -187,6 +247,13 @@ export interface DXFAnalysisResult {
   entityCounts: Record<string, number>;
   tables: TableFragment[];
   renderableEntities: DXFRenderableEntity[];
+  images: DXFImageEntity[];
+  externalReferences: DXFExternalReference[];
+  rasterVariables?: {
+    imageFrame: number; // 0 = off, 1 = on, 2 = on not plotted
+    imageQuality: number;
+    units: number;
+  };
   layers: string[];
   maxHandleHex: string;
   extents: {
